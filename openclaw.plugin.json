@@ -1,0 +1,18 @@
+{
+  "id": "tlon-hosting-oc",
+  "name": "Tlon Hosting OpenClaw",
+  "description": "Tlon hosting control plane for OpenClaw subscription authentication",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "gatewayMethodDispatch": [
+      "authenticated-request"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

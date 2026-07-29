@@ -1,0 +1,45 @@
+{
+  "name": "tlon-hosting-oc",
+  "version": "0.1.0",
+  "description": "Tlon hosting control plane for OpenClaw subscription authentication",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tloncorp/tlon-hosting-oc.git"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "pack": "npm pack",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "tsc": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^25.4.0",
+    "openclaw": "2026.7.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.7.1"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "install": {
+      "minHostVersion": ">=2026.7.1",
+      "localPath": "extensions/tlon-hosting-oc"
+    }
+  },
+  "packageManager": "pnpm@11.9.0"
+}
