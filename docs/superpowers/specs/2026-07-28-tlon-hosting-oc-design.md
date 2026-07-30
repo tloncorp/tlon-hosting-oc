@@ -11,7 +11,7 @@ must not copy unrelated Tlon channel functionality.
 
 ## Scope
 
-The standalone plugin owns only:
+The standalone plugin owns:
 
 - the gateway-authenticated `/tlon/provider-auth/*` HTTP routes;
 - OpenAI device-code and Anthropic setup-token flows;
@@ -19,6 +19,9 @@ The standalone plugin owns only:
   discovery;
 - registration of the bundled OpenAI and Anthropic provider runtimes when a
   restrictive OpenClaw plugin allowlist would otherwise omit them; and
+- migration of legacy model overrides in OpenClaw's hosted cron store;
+- synchronization of Tlon-hosted, ship-interpolated workspace prompts during
+  the awaited OpenClaw plugin-service startup phase; and
 - tests for the extracted behavior.
 
 The Tlon channel plugin continues to own Tlon/Urbit messaging, channel
@@ -39,15 +42,21 @@ openclaw.plugin.json
 package.json
 tsconfig.json
 src/
+  cron-model-migration.ts
+  cron-model-migration.test.ts
   provider-auth-routes.ts
   provider-auth-routes.test.ts
   subscription-provider-runtime.ts
   subscription-provider-runtime.test.ts
+  workspace-prompts.ts
+  workspace-prompts.test.ts
 ```
 
 The entrypoint uses OpenClaw's standard plugin entry helper. During
-registration it first registers the missing subscription provider runtimes,
-then registers the provider-auth HTTP routes.
+registration it registers the missing subscription provider runtimes, the
+provider-auth HTTP routes, and awaited plugin services that migrate hosted cron
+jobs and update workspace prompts before scheduled services and gateway startup
+hooks such as `boot-md` run.
 
 The manifest declares startup activation and the authenticated gateway request
 contract needed by the trusted-operator HTTP route. The package targets
@@ -111,6 +120,31 @@ The `tlon-apps` branch will remove:
 
 This ensures the extracted behavior has one owner and cannot be registered
 twice.
+
+## Hosted Workspace Prompts
+
+OpenClaw awaits registered plugin services before dispatching gateway-startup
+internal hooks. The hosting plugin uses that lifecycle to fetch the configured
+prompt archive, extract it in a temporary directory, interpolate ship and
+owner values, and idempotently update managed marker blocks. A failed download
+logs a warning and does not prevent the gateway from starting.
+
+`tlawn.py` remains responsible for creating the workspace, ship configuration,
+and permissions before dropping to the `openclaw` user. Prompt content and
+refresh behavior no longer have a second implementation in PID 1.
+
+## Hosted Cron Model Migration
+
+The hosting plugin removes the obsolete
+`openrouter/minimax/minimax-m2.7` override from `agentTurn` jobs in OpenClaw's
+default cron store. This lets those jobs inherit the currently configured
+default model. The awaited service runs before OpenClaw starts scheduled
+services, preserves custom model overrides, creates a backup before changing
+the store, rejects symlinked paths, and writes the existing one-time migration
+marker.
+
+Cron store migration no longer has a second implementation or gateway-loop
+call in `tlawn.py`.
 
 ## Error Handling
 
