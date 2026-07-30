@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { registerRoutes, registerRuntimes } = vi.hoisted(() => ({
+const { registerCronRepair, registerRoutes, registerRuntimes } = vi.hoisted(() => ({
+  registerCronRepair: vi.fn(),
   registerRoutes: vi.fn(),
   registerRuntimes: vi.fn(),
 }));
 
+vi.mock('./src/cron-scope-repair.js', () => ({
+  registerCronScopeRepair: registerCronRepair,
+}));
 vi.mock('./src/provider-auth-routes.js', () => ({
   registerProviderAuthRoutes: registerRoutes,
 }));
@@ -23,6 +27,7 @@ describe('tlon-hosting-oc plugin', () => {
     registerTlonHostingOpenClaw(api);
 
     expect(registerRuntimes).toHaveBeenCalledWith(api);
+    expect(registerCronRepair).toHaveBeenCalledWith(api);
     expect(registerRoutes).toHaveBeenCalledWith(api);
     expect(registerRuntimes.mock.invocationCallOrder[0]).toBeLessThan(
       registerRoutes.mock.invocationCallOrder[0]
