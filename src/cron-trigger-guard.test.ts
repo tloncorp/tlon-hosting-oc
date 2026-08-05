@@ -61,41 +61,50 @@ async function callGuard(
 }
 
 describe('registerHostedCronTriggerGuard', () => {
-  it.each([
-    'x',
-    'noop',
-    'disabled',
-    'disabled-placeholder',
-    'return { fire: true };',
-    'json({ fire: true })',
-  ])('removes inert add trigger %j before gateway validation', async (script) => {
-    const { handler } = registerGuard();
-    const params = {
-      action: 'add',
-      job: {
-        name: 'morning-weather',
-        schedule: { kind: 'cron', expr: '0 9 * * *' },
-        trigger: { script, once: false },
-        payload: { kind: 'agentTurn', message: 'Send the weather.' },
-      },
-    };
-
-    const result = await callGuard(handler, params);
-
-    expect(result).toEqual({
-      params: {
+  it.each(['x', 'return { fire: true };'])(
+    'blocks add trigger %j when hosted triggers are disabled',
+    async (script) => {
+      const { api, handler } = registerGuard();
+      const params = {
         action: 'add',
         job: {
           name: 'morning-weather',
           schedule: { kind: 'cron', expr: '0 9 * * *' },
+          trigger: { script, once: false },
           payload: { kind: 'agentTurn', message: 'Send the weather.' },
         },
+      };
+
+      const result = await callGuard(handler, params);
+
+      expect(result).toMatchObject({
+        block: true,
+        blockReason: expect.stringContaining(
+          'Conditional cron trigger scripts are unavailable'
+        ),
+      });
+      expect(result).not.toHaveProperty('params');
+      expect(params.job.trigger).toEqual({ script, once: false });
+      expect(api.logger.warn).toHaveBeenCalledOnce();
+    }
+  );
+
+  it('allows an ordinary cron add without a trigger', async () => {
+    const { handler } = registerGuard();
+
+    const result = await callGuard(handler, {
+      action: 'add',
+      job: {
+        name: 'morning-weather',
+        schedule: { kind: 'cron', expr: '0 9 * * *' },
+        payload: { kind: 'agentTurn', message: 'Send the weather.' },
       },
     });
-    expect(params.job.trigger).toEqual({ script, once: false });
+
+    expect(result).toBeUndefined();
   });
 
-  it('removes an inert trigger from an update patch', async () => {
+  it('blocks a trigger in an update patch', async () => {
     const { handler } = registerGuard();
 
     const result = await callGuard(handler, {
@@ -107,12 +116,11 @@ describe('registerHostedCronTriggerGuard', () => {
       },
     });
 
-    expect(result).toEqual({
-      params: {
-        action: 'update',
-        jobId: 'job-1',
-        patch: { description: 'Run every afternoon.' },
-      },
+    expect(result).toMatchObject({
+      block: true,
+      blockReason: expect.stringContaining(
+        'Conditional cron trigger scripts are unavailable'
+      ),
     });
   });
 
@@ -192,8 +200,11 @@ describe('registerHostedCronTriggerGuard', () => {
     expect(await callGuard(enabledAtRuntime.handler, params)).toBeUndefined();
 
     const disabledAtRuntime = registerGuard(enabled, disabled);
-    expect(await callGuard(disabledAtRuntime.handler, params)).toEqual({
-      params: { action: 'add', job: {} },
+    expect(await callGuard(disabledAtRuntime.handler, params)).toMatchObject({
+      block: true,
+      blockReason: expect.stringContaining(
+        'Conditional cron trigger scripts are unavailable'
+      ),
     });
   });
 
