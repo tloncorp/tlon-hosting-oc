@@ -16,6 +16,7 @@ import {
   CRON_MODEL_MIGRATION_MARKER,
   LEGACY_HOSTED_CRON_MODEL,
   configuredPrimaryModel,
+  migrateCurrentCronModels,
   migrateLegacyCronModels,
   registerCronModelMigration,
 } from './cron-model-migration.js';
@@ -148,6 +149,149 @@ describe('cron model migration', () => {
       await rm(stateDir, { recursive: true });
       await rm(outsideDir, { recursive: true });
     }
+  });
+
+  it('migrates current cron models through the OpenClaw store runtime', async () => {
+    const store = {
+      version: 1 as const,
+      jobs: [
+        {
+          id: 'm3-job',
+          payload: {
+            kind: 'agentTurn' as const,
+            message: 'run',
+            model: 'openrouter/minimax/minimax-m3',
+            fallbacks: [
+              'minimax/minimax-m3',
+              'anthropic/claude-opus-4-6',
+              'openrouter/openai/gpt-5.6-luna',
+            ],
+          },
+        },
+        {
+          id: 'legacy-default-job',
+          payload: {
+            kind: 'agentTurn' as const,
+            message: 'run',
+            model: LEGACY_HOSTED_CRON_MODEL,
+            fallbacks: [
+              LEGACY_HOSTED_CRON_MODEL,
+              'anthropic/claude-opus-4-6',
+            ],
+          },
+        },
+        {
+          id: 'custom-job',
+          payload: {
+            kind: 'agentTurn' as const,
+            message: 'run',
+            model: 'anthropic/claude-opus-4-6',
+          },
+        },
+        {
+          id: 'system-event',
+          payload: {
+            kind: 'systemEvent' as const,
+            text: 'wake up',
+          },
+        },
+      ],
+    };
+    const saveStore = vi.fn(async () => {});
+    const logger = { info: vi.fn(), warn: vi.fn() };
+
+    const result = await migrateCurrentCronModels({
+      config: { cron: { store: '/state/cron/jobs.json' } },
+      currentPrimaryModel: 'openrouter/openai/gpt-5.6-luna',
+      logger,
+      runtime: {
+        resolveStorePath: path => path ?? '/default/cron/jobs.json',
+        loadStore: async () => store as never,
+        saveStore,
+      },
+    });
+
+    expect(result).toEqual({
+      status: 'completed',
+      changedJobs: ['m3-job', 'legacy-default-job'],
+      storePath: '/state/cron/jobs.json',
+    });
+    expect(store.jobs[0]?.payload).toEqual({
+      kind: 'agentTurn',
+      message: 'run',
+      model: 'openrouter/openai/gpt-5.6-luna',
+      fallbacks: [
+        'openrouter/openai/gpt-5.6-luna',
+        'anthropic/claude-opus-4-6',
+      ],
+    });
+    expect(store.jobs[1]?.payload).toEqual({
+      kind: 'agentTurn',
+      message: 'run',
+      fallbacks: ['anthropic/claude-opus-4-6'],
+    });
+    expect(store.jobs[2]?.payload).toEqual({
+      kind: 'agentTurn',
+      message: 'run',
+      model: 'anthropic/claude-opus-4-6',
+    });
+    expect(saveStore).toHaveBeenCalledWith(
+      '/state/cron/jobs.json',
+      store
+    );
+    expect(JSON.parse(logger.info.mock.calls[0]?.[0] ?? '{}')).toEqual({
+      event: 'tlon.model.policy.migrated',
+      migrationSource: 'cron_store_runtime',
+      policyRevision: 'model-policy-v1',
+      currentPrimaryModel: 'openrouter/openai/gpt-5.6-luna',
+      cronStorePath: '/state/cron/jobs.json',
+      migratedCurrentCronJobs: 2,
+      migratedCurrentCronJobIds: ['m3-job', 'legacy-default-job'],
+    });
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('does not rewrite the current cron store when no model references match', async () => {
+    const store = {
+      version: 1 as const,
+      jobs: [
+        {
+          id: 'custom-job',
+          payload: {
+            kind: 'agentTurn' as const,
+            message: 'run',
+            model: 'anthropic/claude-opus-4-6',
+            fallbacks: [
+              'anthropic/claude-sonnet-4-6',
+              'anthropic/claude-sonnet-4-6',
+            ],
+          },
+        },
+      ],
+    };
+    const saveStore = vi.fn(async () => {});
+
+    const result = await migrateCurrentCronModels({
+      config: {},
+      currentPrimaryModel: 'openrouter/openai/gpt-5.6-luna',
+      logger: { info: vi.fn(), warn: vi.fn() },
+      runtime: {
+        resolveStorePath: path => path ?? '/default/cron/jobs.json',
+        loadStore: async () => store as never,
+        saveStore,
+      },
+    });
+
+    expect(result).toEqual({
+      status: 'completed-no-matches',
+      changedJobs: [],
+      storePath: '/default/cron/jobs.json',
+    });
+    expect(store.jobs[0]?.payload.fallbacks).toEqual([
+      'anthropic/claude-sonnet-4-6',
+      'anthropic/claude-sonnet-4-6',
+    ]);
+    expect(saveStore).not.toHaveBeenCalled();
   });
 
   it('registers an awaited OpenClaw service', () => {
