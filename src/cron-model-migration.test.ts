@@ -79,6 +79,7 @@ describe('cron model migration', () => {
             kind: 'agentTurn' as const,
             message: 'run',
             model: 'anthropic/claude-opus-4-6',
+            fallbacks: [],
           },
           state: {},
         },
@@ -102,21 +103,17 @@ describe('cron model migration', () => {
     expect(persistedStore.jobs[0].payload).toEqual({
       kind: 'agentTurn',
       message: 'run',
-      model: 'openrouter/openai/gpt-5.6-luna',
-      fallbacks: [
-        'openrouter/openai/gpt-5.6-luna',
-        'anthropic/claude-opus-4-6',
-      ],
+      fallbacks: ['anthropic/claude-opus-4-6'],
     });
     expect(persistedStore.jobs[1].payload).toEqual({
       kind: 'agentTurn',
       message: 'run',
-      fallbacks: [],
     });
     expect(persistedStore.jobs[2].payload).toEqual({
       kind: 'agentTurn',
       message: 'run',
       model: 'anthropic/claude-opus-4-6',
+      fallbacks: [],
     });
   });
 

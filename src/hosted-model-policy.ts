@@ -1,7 +1,5 @@
 export const BASIC_PROVIDER = 'basic';
 export const HOSTED_DEFAULT_PROVIDER = 'openrouter';
-export const HOSTED_DEFAULT_MODEL_ID = 'openai/gpt-5.6-luna';
-export const HOSTED_DEFAULT_MODEL = `${HOSTED_DEFAULT_PROVIDER}/${HOSTED_DEFAULT_MODEL_ID}`;
 export const RETIRED_HOSTED_MODEL_REFS: ReadonlySet<string> = new Set([
   'basic/minimax/minimax-m3',
   'minimax/minimax-m3',

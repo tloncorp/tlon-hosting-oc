@@ -8,10 +8,7 @@ import {
   saveCronStore,
 } from 'openclaw/plugin-sdk/cron-store-runtime';
 
-import {
-  HOSTED_DEFAULT_MODEL,
-  RETIRED_HOSTED_MODEL_REFS,
-} from './hosted-model-policy.js';
+import { RETIRED_HOSTED_MODEL_REFS } from './hosted-model-policy.js';
 
 type Logger = Pick<OpenClawPluginApi['logger'], 'info' | 'warn'>;
 type CronStoreFile = Awaited<ReturnType<typeof loadCronStore>>;
@@ -24,14 +21,17 @@ type CronStoreRuntime = {
 export const LEGACY_HOSTED_CRON_MODEL =
   'openrouter/minimax/minimax-m2.7';
 
+// Legacy-default and retired pins are removed rather than rewritten so the
+// job resolves the configured default model at run time.
 function migrateCurrentCronModelRef(model: string): string | undefined {
   const normalized = model.trim().toLowerCase();
-  if (normalized === LEGACY_HOSTED_CRON_MODEL) {
+  if (
+    normalized === LEGACY_HOSTED_CRON_MODEL ||
+    RETIRED_HOSTED_MODEL_REFS.has(normalized)
+  ) {
     return undefined;
   }
-  return RETIRED_HOSTED_MODEL_REFS.has(normalized)
-    ? HOSTED_DEFAULT_MODEL
-    : model;
+  return model;
 }
 
 function migrateCurrentCronFallbacks(
@@ -44,18 +44,18 @@ function migrateCurrentCronFallbacks(
   let changed = false;
   for (const fallback of fallbacks) {
     const next = migrateCurrentCronModelRef(fallback);
-    if (next === undefined) {
+    if (next === undefined || migrated.includes(next)) {
       changed = true;
       continue;
     }
-    if (next !== fallback || migrated.includes(next)) {
-      changed = true;
-    }
-    if (!migrated.includes(next)) {
-      migrated.push(next);
-    }
+    migrated.push(next);
   }
-  return { fallbacks: changed ? migrated : fallbacks, changed };
+  if (!changed) {
+    return { fallbacks, changed };
+  }
+  // A defined-but-empty fallback list disables OpenClaw's default fallback
+  // resolution; dropping the field restores inheritance instead.
+  return { fallbacks: migrated.length > 0 ? migrated : undefined, changed };
 }
 
 export async function migrateCurrentCronModels(params: {
@@ -91,7 +91,11 @@ export async function migrateCurrentCronModels(params: {
     }
     const fallbacks = migrateCurrentCronFallbacks(job.payload.fallbacks);
     if (fallbacks.changed) {
-      job.payload.fallbacks = fallbacks.fallbacks;
+      if (fallbacks.fallbacks === undefined) {
+        delete job.payload.fallbacks;
+      } else {
+        job.payload.fallbacks = fallbacks.fallbacks;
+      }
       changed = true;
     }
     if (changed) {

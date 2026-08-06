@@ -45,7 +45,7 @@ function createSessionStore(initial: Record<string, SessionEntry>) {
 }
 
 describe('session model migration', () => {
-  it('rewrites exact retired session pins without disturbing session identity or premium models', async () => {
+  it('clears retired session pins without disturbing session identity or premium models', async () => {
     const store = createSessionStore({
       openrouter: {
         sessionId: 'one',
@@ -114,12 +114,12 @@ describe('session model migration', () => {
       sessionId: 'one',
       sessionFile: 'one.jsonl',
       updatedAt: 1,
-      providerOverride: 'openrouter',
-      modelOverride: 'openai/gpt-5.6-luna',
-      modelOverrideSource: 'user',
       authProfileOverride: 'openrouter:custom',
       authProfileOverrideSource: 'user',
     });
+    expect(store.entries.openrouter).not.toHaveProperty('providerOverride');
+    expect(store.entries.openrouter).not.toHaveProperty('modelOverride');
+    expect(store.entries.openrouter).not.toHaveProperty('modelOverrideSource');
     expect(store.entries.openrouter).not.toHaveProperty('modelProvider');
     expect(store.entries.openrouter).not.toHaveProperty('model');
     expect(store.entries.openrouter).not.toHaveProperty('contextTokens');
@@ -130,10 +130,9 @@ describe('session model migration', () => {
     expect(store.entries.direct).toMatchObject({
       sessionId: 'two',
       updatedAt: 2,
-      providerOverride: 'openrouter',
-      modelOverride: 'openai/gpt-5.6-luna',
-      modelOverrideSource: 'user',
     });
+    expect(store.entries.direct).not.toHaveProperty('providerOverride');
+    expect(store.entries.direct).not.toHaveProperty('modelOverride');
     expect(store.entries.direct).not.toHaveProperty('authProfileOverride');
     expect(store.entries.direct).not.toHaveProperty(
       'authProfileOverrideSource'

@@ -11,8 +11,6 @@ import type {
 import {
   BASIC_PROVIDER,
   configuredPrimaryModel,
-  HOSTED_DEFAULT_MODEL,
-  HOSTED_DEFAULT_MODEL_ID,
   HOSTED_DEFAULT_PROVIDER,
   normalizeModelRef,
   RETIRED_HOSTED_MODEL_REFS,
@@ -186,12 +184,10 @@ export function migrateHostedSessionEntry(
     return null;
   }
 
+  // Retired pins are cleared rather than rewritten to a replacement model so
+  // the session follows the configured default from the next turn onward.
   const previousProvider = normalizeModelRef(migrated.providerOverride);
-  migrated.providerOverride = HOSTED_DEFAULT_PROVIDER;
-  migrated.modelOverride = HOSTED_DEFAULT_MODEL_ID;
-  migrated.modelOverrideSource = 'user';
-  delete migrated.modelOverrideFallbackOriginProvider;
-  delete migrated.modelOverrideFallbackOriginModel;
+  clearSessionModelOverride(migrated);
   if (
     previousProvider !== '' &&
     previousProvider !== BASIC_PROVIDER &&
@@ -201,7 +197,6 @@ export function migrateHostedSessionEntry(
     delete migrated.authProfileOverrideSource;
     delete migrated.authProfileOverrideCompactionCount;
   }
-  clearSessionModelRuntimeCache(migrated);
   return migrated;
 }
 
@@ -286,7 +281,7 @@ export async function migrateHostedSessionModels(params: {
     logger.info(
       `[tlon-hosting] Migrated ${changedSessions} hosted session model selection${
         changedSessions === 1 ? '' : 's'
-      }; retired models now use ${HOSTED_DEFAULT_MODEL}`
+      }; retired model selections now follow the configured default`
     );
   }
   return { changedSessions };
