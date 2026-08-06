@@ -1,15 +1,38 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { registerRoutes, registerRuntimes } = vi.hoisted(() => ({
-  registerRoutes: vi.fn(),
-  registerRuntimes: vi.fn(),
-}));
+const {
+  registerCronGuard,
+  registerCronMigration,
+  registerCronRepair,
+  registerPromptSync,
+  registerRoutes,
+  registerRuntimes,
+} = vi.hoisted(() => ({
+    registerCronGuard: vi.fn(),
+    registerCronMigration: vi.fn(),
+    registerCronRepair: vi.fn(),
+    registerPromptSync: vi.fn(),
+    registerRoutes: vi.fn(),
+    registerRuntimes: vi.fn(),
+  }));
 
+vi.mock('./src/cron-model-migration.js', () => ({
+  registerCronModelMigration: registerCronMigration,
+}));
+vi.mock('./src/cron-scope-repair.js', () => ({
+  registerCronScopeRepair: registerCronRepair,
+}));
+vi.mock('./src/cron-trigger-guard.js', () => ({
+  registerHostedCronTriggerGuard: registerCronGuard,
+}));
 vi.mock('./src/provider-auth-routes.js', () => ({
   registerProviderAuthRoutes: registerRoutes,
 }));
 vi.mock('./src/subscription-provider-runtime.js', () => ({
   registerSubscriptionProviderRuntimes: registerRuntimes,
+}));
+vi.mock('./src/workspace-prompts.js', () => ({
+  registerWorkspacePromptSync: registerPromptSync,
 }));
 
 import plugin, { registerTlonHostingOpenClaw } from './index.js';
@@ -22,8 +45,12 @@ describe('tlon-hosting-oc plugin', () => {
 
     registerTlonHostingOpenClaw(api);
 
+    expect(registerCronGuard).toHaveBeenCalledWith(api);
     expect(registerRuntimes).toHaveBeenCalledWith(api);
+    expect(registerCronMigration).toHaveBeenCalledWith(api);
+    expect(registerCronRepair).toHaveBeenCalledWith(api);
     expect(registerRoutes).toHaveBeenCalledWith(api);
+    expect(registerPromptSync).toHaveBeenCalledWith(api);
     expect(registerRuntimes.mock.invocationCallOrder[0]).toBeLessThan(
       registerRoutes.mock.invocationCallOrder[0]
     );

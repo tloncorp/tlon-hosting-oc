@@ -1,7 +1,7 @@
 {
   "name": "tlon-hosting-oc",
   "version": "0.1.0",
-  "description": "Tlon hosting control plane for OpenClaw subscription authentication",
+  "description": "Tlon hosting control plane for managed OpenClaw gateways",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -31,6 +31,9 @@
   },
   "peerDependencies": {
     "openclaw": ">=2026.7.1"
+  },
+  "dependencies": {
+    "tar": "7.5.16"
   },
   "openclaw": {
     "extensions": [
