@@ -88,9 +88,29 @@ describe('session model migration', () => {
         authProfileOverride: 'minimax:default',
         authProfileOverrideSource: 'user',
       },
+      'm2.5': {
+        sessionId: 'm2.5',
+        updatedAt: 3,
+        providerOverride: 'openrouter',
+        modelOverride: 'minimax/minimax-m2.5',
+        modelOverrideSource: 'user',
+      },
+      'm2.7': {
+        sessionId: 'm2.7',
+        updatedAt: 4,
+        providerOverride: 'minimax',
+        modelOverride: 'minimax-m2.7',
+        modelOverrideSource: 'user',
+      },
+      'm2.1': {
+        sessionId: 'm2.1',
+        updatedAt: 5,
+        modelOverride: 'basic/minimax/minimax-m2.1',
+        modelOverrideSource: 'user',
+      },
       premium: {
         sessionId: 'three',
-        updatedAt: 3,
+        updatedAt: 6,
         providerOverride: 'anthropic',
         modelOverride: 'claude-opus-4-6',
         modelOverrideSource: 'user',
@@ -109,7 +129,7 @@ describe('session model migration', () => {
       sessionStore: store.runtime,
     });
 
-    expect(result.changedSessions).toBe(2);
+    expect(result.changedSessions).toBe(5);
     expect(store.entries.openrouter).toMatchObject({
       sessionId: 'one',
       sessionFile: 'one.jsonl',
@@ -137,6 +157,11 @@ describe('session model migration', () => {
     expect(store.entries.direct).not.toHaveProperty(
       'authProfileOverrideSource'
     );
+    for (const key of ['m2.1', 'm2.5', 'm2.7']) {
+      expect(store.entries[key]).not.toHaveProperty('providerOverride');
+      expect(store.entries[key]).not.toHaveProperty('modelOverride');
+      expect(store.entries[key]).not.toHaveProperty('modelOverrideSource');
+    }
     expect(store.entries.premium).toMatchObject({
       providerOverride: 'anthropic',
       modelOverride: 'claude-opus-4-6',

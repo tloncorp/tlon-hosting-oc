@@ -67,11 +67,31 @@ describe('cron model migration', () => {
           state: {},
         },
         {
-          id: 'premium-job',
-          name: 'Premium job',
+          id: 'older-default-job',
+          name: 'Older default job',
           enabled: true,
           createdAtMs: 3,
           updatedAtMs: 3,
+          schedule: { kind: 'every' as const, everyMs: 60_000 },
+          sessionTarget: 'isolated' as const,
+          wakeMode: 'now' as const,
+          payload: {
+            kind: 'agentTurn' as const,
+            message: 'run',
+            model: 'openrouter/minimax/minimax-m2.5',
+            fallbacks: [
+              'basic/minimax/minimax-m2.1',
+              'minimax/minimax-m2.7',
+            ],
+          },
+          state: {},
+        },
+        {
+          id: 'premium-job',
+          name: 'Premium job',
+          enabled: true,
+          createdAtMs: 4,
+          updatedAtMs: 4,
           schedule: { kind: 'every' as const, everyMs: 60_000 },
           sessionTarget: 'isolated' as const,
           wakeMode: 'now' as const,
@@ -99,7 +119,11 @@ describe('cron model migration', () => {
       },
     });
 
-    expect(result.changedJobs).toEqual(['m3-job', 'legacy-default-job']);
+    expect(result.changedJobs).toEqual([
+      'm3-job',
+      'legacy-default-job',
+      'older-default-job',
+    ]);
     expect(persistedStore.jobs[0].payload).toEqual({
       kind: 'agentTurn',
       message: 'run',
@@ -110,6 +134,10 @@ describe('cron model migration', () => {
       message: 'run',
     });
     expect(persistedStore.jobs[2].payload).toEqual({
+      kind: 'agentTurn',
+      message: 'run',
+    });
+    expect(persistedStore.jobs[3].payload).toEqual({
       kind: 'agentTurn',
       message: 'run',
       model: 'anthropic/claude-opus-4-6',

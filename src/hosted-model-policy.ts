@@ -1,10 +1,19 @@
 export const BASIC_PROVIDER = 'basic';
 export const HOSTED_DEFAULT_PROVIDER = 'openrouter';
-export const RETIRED_HOSTED_MODEL_REFS: ReadonlySet<string> = new Set([
-  'basic/minimax/minimax-m3',
+const RETIRED_HOSTED_MODEL_IDS = [
+  'minimax/minimax-m2.1',
+  'minimax/minimax-m2.5',
+  'minimax/minimax-m2.7',
   'minimax/minimax-m3',
-  'openrouter/minimax/minimax-m3',
-]);
+] as const;
+
+export const RETIRED_HOSTED_MODEL_REFS: ReadonlySet<string> = new Set(
+  RETIRED_HOSTED_MODEL_IDS.flatMap(model => [
+    `${BASIC_PROVIDER}/${model}`,
+    model,
+    `${HOSTED_DEFAULT_PROVIDER}/${model}`,
+  ])
+);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
