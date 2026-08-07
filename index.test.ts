@@ -7,6 +7,7 @@ const {
   registerPromptSync,
   registerRoutes,
   registerRuntimes,
+  registerSessionMigration,
 } = vi.hoisted(() => ({
     registerCronGuard: vi.fn(),
     registerCronMigration: vi.fn(),
@@ -14,6 +15,7 @@ const {
     registerPromptSync: vi.fn(),
     registerRoutes: vi.fn(),
     registerRuntimes: vi.fn(),
+    registerSessionMigration: vi.fn(),
   }));
 
 vi.mock('./src/cron-model-migration.js', () => ({
@@ -27,6 +29,9 @@ vi.mock('./src/cron-trigger-guard.js', () => ({
 }));
 vi.mock('./src/provider-auth-routes.js', () => ({
   registerProviderAuthRoutes: registerRoutes,
+}));
+vi.mock('./src/session-model-migration.js', () => ({
+  registerSessionModelMigration: registerSessionMigration,
 }));
 vi.mock('./src/subscription-provider-runtime.js', () => ({
   registerSubscriptionProviderRuntimes: registerRuntimes,
@@ -49,6 +54,7 @@ describe('tlon-hosting-oc plugin', () => {
     expect(registerRuntimes).toHaveBeenCalledWith(api);
     expect(registerCronMigration).toHaveBeenCalledWith(api);
     expect(registerCronRepair).toHaveBeenCalledWith(api);
+    expect(registerSessionMigration).toHaveBeenCalledWith(api);
     expect(registerRoutes).toHaveBeenCalledWith(api);
     expect(registerPromptSync).toHaveBeenCalledWith(api);
     expect(registerRuntimes.mock.invocationCallOrder[0]).toBeLessThan(
