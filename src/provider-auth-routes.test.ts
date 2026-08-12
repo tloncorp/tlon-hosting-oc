@@ -50,8 +50,8 @@ describe('extractSubscriptionModels', () => {
           },
           {
             provider: 'xai',
-            id: 'grok-4.3',
-            name: 'Grok 4.3',
+            id: 'grok-4.6',
+            name: 'Grok 4.6',
             api: 'openai-responses',
             available: true,
           },
@@ -63,7 +63,7 @@ describe('extractSubscriptionModels', () => {
         { id: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
         { id: 'claude-opus-4-8', name: 'Claude Opus 4.8' },
       ],
-      xai: [{ id: 'grok-4.3', name: 'Grok 4.3' }],
+      xai: [{ id: 'grok-4.6', name: 'Grok 4.6' }],
     });
   });
 
@@ -86,15 +86,15 @@ describe('extractSubscriptionModels', () => {
             name: 'Claude Sonnet 5',
           },
           {
-            key: 'xai/grok-4.3',
-            name: 'Grok 4.3',
+            key: 'xai/grok-4.6',
+            name: 'Grok 4.6',
           },
         ],
       })
     ).toEqual({
       openai: [{ id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }],
       anthropic: [{ id: 'claude-sonnet-5', name: 'Claude Sonnet 5' }],
-      xai: [{ id: 'grok-4.3', name: 'Grok 4.3' }],
+      xai: [{ id: 'grok-4.6', name: 'Grok 4.6' }],
     });
   });
 
