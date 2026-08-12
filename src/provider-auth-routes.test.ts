@@ -4,6 +4,7 @@ import {
   extractOpenAICodexModels,
   extractSubscriptionModels,
   isManagedConfigLockPermissionError,
+  parseDeviceCodeVerificationMessage,
   parseOpenAIVerificationMessage,
 } from './provider-auth-routes.js';
 
@@ -47,6 +48,13 @@ describe('extractSubscriptionModels', () => {
             api: 'anthropic-messages',
             available: false,
           },
+          {
+            provider: 'xai',
+            id: 'grok-4.3',
+            name: 'Grok 4.3',
+            api: 'openai-responses',
+            available: true,
+          },
         ],
       })
     ).toEqual({
@@ -55,6 +63,7 @@ describe('extractSubscriptionModels', () => {
         { id: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
         { id: 'claude-opus-4-8', name: 'Claude Opus 4.8' },
       ],
+      xai: [{ id: 'grok-4.3', name: 'Grok 4.3' }],
     });
   });
 
@@ -76,11 +85,16 @@ describe('extractSubscriptionModels', () => {
             key: 'anthropic/claude-sonnet-5',
             name: 'Claude Sonnet 5',
           },
+          {
+            key: 'xai/grok-4.3',
+            name: 'Grok 4.3',
+          },
         ],
       })
     ).toEqual({
       openai: [{ id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }],
       anthropic: [{ id: 'claude-sonnet-5', name: 'Claude Sonnet 5' }],
+      xai: [{ id: 'grok-4.3', name: 'Grok 4.3' }],
     });
   });
 
@@ -108,6 +122,7 @@ describe('extractSubscriptionModels', () => {
     ).toEqual({
       openai: [{ id: 'gpt-5.6-luna' }],
       anthropic: [],
+      xai: [],
     });
   });
 });
@@ -203,5 +218,34 @@ describe('parseOpenAIVerificationMessage', () => {
     'URL: https://auth.openai.com/codex/device',
   ])('rejects an invalid or incomplete handoff: %s', (message) => {
     expect(parseOpenAIVerificationMessage(message)).toBeNull();
+  });
+});
+
+describe('parseDeviceCodeVerificationMessage', () => {
+  it('extracts the xAI device URL and one-time code', () => {
+    expect(
+      parseDeviceCodeVerificationMessage(
+        'xai',
+        [
+          'Open this URL in your LOCAL browser and enter the code below.',
+          'URL: https://accounts.x.ai/oauth2/device?user_code=ABCD-1234',
+          'Code: ABCD-1234',
+        ].join('\n')
+      )
+    ).toEqual({
+      verificationUrl:
+        'https://accounts.x.ai/oauth2/device?user_code=ABCD-1234',
+      userCode: 'ABCD-1234',
+    });
+  });
+
+  it.each([
+    'URL: http://accounts.x.ai/oauth2/device\nCode: ABCD-1234',
+    'URL: https://accounts.x.ai.evil.example/oauth2/device\nCode: ABCD-1234',
+    'URL: https://auth.x.ai/oauth2/device\nCode: ABCD-1234',
+    'URL: https://accounts.x.ai/oauth2/other\nCode: ABCD-1234',
+    'URL: https://accounts.x.ai/oauth2/device',
+  ])('rejects an invalid or incomplete xAI handoff: %s', (message) => {
+    expect(parseDeviceCodeVerificationMessage('xai', message)).toBeNull();
   });
 });

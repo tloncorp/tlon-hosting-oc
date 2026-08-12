@@ -2,7 +2,7 @@ import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
 import { resolvePluginProviders } from 'openclaw/plugin-sdk/provider-catalog-runtime';
 
-const SUBSCRIPTION_PROVIDER_IDS = ['openai', 'anthropic'] as const;
+const SUBSCRIPTION_PROVIDER_IDS = ['openai', 'anthropic', 'xai'] as const;
 
 type SubscriptionProviderId = (typeof SUBSCRIPTION_PROVIDER_IDS)[number];
 type ProviderResolver = typeof resolvePluginProviders;

@@ -31,6 +31,7 @@ const OPENAI_CODEX_MODELS_URL =
 const OPENAI_CODEX_MODELS_TIMEOUT_MS = 10_000;
 
 type ProviderId = 'openai' | 'anthropic' | 'xai';
+type DeviceCodeProviderId = Exclude<ProviderId, 'anthropic'>;
 type FlowStatus =
   | 'awaiting_browser'
   | 'awaiting_token'
@@ -93,7 +94,9 @@ function publicFlow(flow: ProviderAuthFlow): PublicProviderAuthFlow {
 }
 
 function normalizeProvider(value: unknown): ProviderId | null {
-  return value === 'openai' || value === 'anthropic' ? value : null;
+  return value === 'openai' || value === 'anthropic' || value === 'xai'
+    ? value
+    : null;
 }
 
 function pruneFlows(now = Date.now()) {
@@ -250,7 +253,7 @@ export function extractSubscriptionModels(
     .map(normalizeCatalogEntry)
     .filter((entry) => entry !== null);
 
-  for (const provider of ['openai', 'anthropic'] as const) {
+  for (const provider of ['openai', 'anthropic', 'xai'] as const) {
     const seen = new Set<string>();
     catalog[provider] = entries
       .filter((entry) => {
@@ -348,6 +351,13 @@ export function isManagedConfigLockPermissionError(error: unknown): boolean {
 export function parseOpenAIVerificationMessage(
   message: string
 ): { verificationUrl: string; userCode: string } | null {
+  return parseDeviceCodeVerificationMessage('openai', message);
+}
+
+export function parseDeviceCodeVerificationMessage(
+  provider: DeviceCodeProviderId,
+  message: string
+): { verificationUrl: string; userCode: string } | null {
   const urlMatch = /^URL:\s*(\S+)\s*$/im.exec(message);
   const codeMatch = /^Code:\s*(\S+)\s*$/im.exec(message);
   if (!urlMatch?.[1] || !codeMatch?.[1]) {
@@ -360,11 +370,11 @@ export function parseOpenAIVerificationMessage(
   } catch {
     return null;
   }
-  if (
-    url.protocol !== 'https:' ||
-    url.hostname !== 'auth.openai.com' ||
-    url.pathname !== '/codex/device'
-  ) {
+  const trustedUrl =
+    provider === 'openai'
+      ? url.hostname === 'auth.openai.com' && url.pathname === '/codex/device'
+      : url.hostname === 'accounts.x.ai' && url.pathname === '/oauth2/device';
+  if (url.protocol !== 'https:' || !trustedUrl) {
     return null;
   }
   return {
@@ -424,16 +434,23 @@ function createPrompter(params: {
   };
 }
 
-async function runOpenAIFlow(api: OpenClawPluginApi, flowId: string) {
+async function runDeviceCodeFlow(
+  api: OpenClawPluginApi,
+  flowId: string,
+  provider: DeviceCodeProviderId
+) {
   try {
     await runModelsAuthLoginFlow({
-      provider: 'openai',
+      provider,
       method: 'device-code',
       agent: 'main',
       runtime: createRuntime(api),
       prompter: createPrompter({
         onNote: (message) => {
-          const verification = parseOpenAIVerificationMessage(message);
+          const verification = parseDeviceCodeVerificationMessage(
+            provider,
+            message
+          );
           if (verification) {
             updateFlow(flowId, {
               ...verification,
@@ -453,7 +470,7 @@ async function runOpenAIFlow(api: OpenClawPluginApi, flowId: string) {
     // The credential is already durable in the pier-backed auth store.
     if (isManagedConfigLockPermissionError(error)) {
       api.logger.info(
-        '[tlon-hosting] OpenAI auth saved; skipped optional root-managed config patch'
+        `[tlon-hosting] ${provider} auth saved; skipped optional root-managed config patch`
       );
       updateFlow(flowId, { status: 'complete' });
       return;
@@ -506,7 +523,7 @@ async function runAnthropicFlow(
   }
 }
 
-async function refreshExpiredOpenAIProfiles(api: OpenClawPluginApi) {
+async function refreshExpiredOAuthProfiles(api: OpenClawPluginApi) {
   const cfg = api.runtime.config.current() as OpenClawConfig;
   const agentDir = resolveDefaultAgentDir(cfg);
   const store = ensureAuthProfileStore(agentDir, {
@@ -514,27 +531,29 @@ async function refreshExpiredOpenAIProfiles(api: OpenClawPluginApi) {
     config: cfg,
   });
 
-  for (const profileId of listProfilesForProvider(store, 'openai')) {
-    const credential = store.profiles[profileId];
-    if (
-      credential?.type !== 'oauth' ||
-      !credential.expires ||
-      credential.expires > Date.now() + 60_000
-    ) {
-      continue;
-    }
-    try {
-      await resolveApiKeyForProfile({
-        cfg,
-        store,
-        profileId,
-        agentDir,
-        forceRefresh: true,
-      });
-    } catch {
-      api.logger.warn(
-        `[tlon-hosting] OpenAI auth refresh failed for ${profileId}; re-login may be required`
-      );
+  for (const provider of ['openai', 'xai'] as const) {
+    for (const profileId of listProfilesForProvider(store, provider)) {
+      const credential = store.profiles[profileId];
+      if (
+        credential?.type !== 'oauth' ||
+        !credential.expires ||
+        credential.expires > Date.now() + 60_000
+      ) {
+        continue;
+      }
+      try {
+        await resolveApiKeyForProfile({
+          cfg,
+          store,
+          profileId,
+          agentDir,
+          forceRefresh: true,
+        });
+      } catch {
+        api.logger.warn(
+          `[tlon-hosting] ${provider} auth refresh failed for ${profileId}; re-login may be required`
+        );
+      }
     }
   }
 }
@@ -624,7 +643,7 @@ async function loadSubscriptionModelCatalog(
       .request('models.list', { view: 'all' })
       .catch((error: unknown) => {
         api.logger.warn(
-          `[tlon-hosting] Anthropic subscription model catalog load failed: ${errorMessage(
+          `[tlon-hosting] Subscription model catalog load failed: ${errorMessage(
             error
           )}`
         );
@@ -635,6 +654,7 @@ async function loadSubscriptionModelCatalog(
   return {
     openai,
     anthropic: gatewayCatalog.anthropic ?? [],
+    xai: gatewayCatalog.xai ?? [],
   };
 }
 
@@ -673,7 +693,7 @@ function includeDetectedAuthFailures(
         ? (provider.profiles as Array<Record<string, unknown>>)
         : [];
       const hasSubscriptionProfile = profiles.some((profile) => {
-        if (providerId === 'openai') {
+        if (providerId === 'openai' || providerId === 'xai') {
           return profile.type === 'oauth';
         }
         if (providerId === 'anthropic') {
@@ -682,7 +702,9 @@ function includeDetectedAuthFailures(
         return true;
       });
       const subscriptionStatus =
-        (providerId === 'openai' || providerId === 'anthropic') &&
+        (providerId === 'openai' ||
+          providerId === 'anthropic' ||
+          providerId === 'xai') &&
         !hasSubscriptionProfile
           ? { ...provider, status: 'missing', expiry: undefined }
           : provider;
@@ -716,7 +738,7 @@ function createFlow(provider: ProviderId): ProviderAuthFlow {
   const flow: ProviderAuthFlow = {
     id: randomUUID(),
     provider,
-    status: provider === 'openai' ? 'awaiting_browser' : 'awaiting_token',
+    status: provider === 'anthropic' ? 'awaiting_token' : 'awaiting_browser',
     createdAt: now,
     expiresAt: now + FLOW_TTL_MS,
   };
@@ -737,7 +759,7 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
 
       try {
         if (req.method === 'GET' && suffix === '/status') {
-          await refreshExpiredOpenAIProfiles(api);
+          await refreshExpiredOAuthProfiles(api);
           const [result, subscriptionModels] = await Promise.all([
             api.runtime.gateway.request('models.authStatus', {
               refresh: true,
@@ -757,14 +779,14 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
           const provider = normalizeProvider(body.provider);
           if (!provider) {
             writeJson(res, 400, {
-              error: 'provider must be openai or anthropic',
+              error: 'provider must be openai, anthropic, or xai',
             });
             return;
           }
 
           const flow = createFlow(provider);
-          if (provider === 'openai') {
-            void runOpenAIFlow(api, flow.id);
+          if (provider !== 'anthropic') {
+            void runDeviceCodeFlow(api, flow.id, provider);
             if (!flow.verificationUrl && flow.status === 'awaiting_browser') {
               await waitForFlowUpdate(flow.id);
             }
@@ -817,7 +839,7 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
           const provider = normalizeProvider(url.searchParams.get('provider'));
           if (!provider) {
             writeJson(res, 400, {
-              error: 'provider must be openai or anthropic',
+              error: 'provider must be openai, anthropic, or xai',
             });
             return;
           }

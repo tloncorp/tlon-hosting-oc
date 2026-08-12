@@ -26,30 +26,32 @@ describe('registerSubscriptionProviderRuntimes', () => {
     });
     const openai = { id: 'openai' };
     const anthropic = { id: 'anthropic' };
-    const resolveProviders = vi.fn(() => [openai, anthropic]);
+    const xai = { id: 'xai' };
+    const resolveProviders = vi.fn(() => [openai, anthropic, xai]);
 
     const registered = registerSubscriptionProviderRuntimes(
       api,
       resolveProviders as never
     );
 
-    expect(registered).toEqual(['openai', 'anthropic']);
+    expect(registered).toEqual(['openai', 'anthropic', 'xai']);
     expect(resolveProviders).toHaveBeenCalledWith(
       expect.objectContaining({
-        providerRefs: ['openai', 'anthropic'],
-        onlyPluginIds: ['openai', 'anthropic'],
+        providerRefs: ['openai', 'anthropic', 'xai'],
+        onlyPluginIds: ['openai', 'anthropic', 'xai'],
         activate: false,
         cache: false,
         workspaceDir: '/tmp/tlon-workspace',
         config: expect.objectContaining({
           plugins: expect.objectContaining({
-            allow: ['tlon', 'memory-core', 'openai', 'anthropic'],
+            allow: ['tlon', 'memory-core', 'openai', 'anthropic', 'xai'],
           }),
         }),
       })
     );
     expect(api.registerProvider).toHaveBeenNthCalledWith(1, openai);
     expect(api.registerProvider).toHaveBeenNthCalledWith(2, anthropic);
+    expect(api.registerProvider).toHaveBeenNthCalledWith(3, xai);
     expect(api.config.plugins?.allow).toEqual(['tlon', 'memory-core']);
   });
 
@@ -66,7 +68,7 @@ describe('registerSubscriptionProviderRuntimes', () => {
   it('does not override an explicitly disabled provider', () => {
     const api = makeApi({
       plugins: {
-        allow: ['tlon', 'openai'],
+        allow: ['tlon', 'openai', 'xai'],
         entries: {
           anthropic: { enabled: false },
         },
@@ -82,7 +84,7 @@ describe('registerSubscriptionProviderRuntimes', () => {
 
   it('warns and keeps the gateway running when a provider cannot load', () => {
     const api = makeApi({
-      plugins: { allow: ['tlon', 'anthropic'] },
+      plugins: { allow: ['tlon', 'anthropic', 'xai'] },
     });
     const resolveProviders = vi.fn(() => []);
 
@@ -106,7 +108,9 @@ describe('registerSubscriptionProviderRuntimes', () => {
         .mock.calls.map(([provider]) => [provider.id, provider])
     );
 
-    expect(new Set(registered)).toEqual(new Set(['openai', 'anthropic']));
+    expect(new Set(registered)).toEqual(
+      new Set(['openai', 'anthropic', 'xai'])
+    );
     expect(providerById.get('openai')?.resolveDynamicModel).toBeTypeOf(
       'function'
     );
@@ -128,5 +132,6 @@ describe('registerSubscriptionProviderRuntimes', () => {
     expect(providerById.get('anthropic')?.resolveDynamicModel).toBeTypeOf(
       'function'
     );
+    expect(providerById.get('xai')?.refreshOAuth).toBeTypeOf('function');
   });
 });
