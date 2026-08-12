@@ -30,7 +30,7 @@ const OPENAI_CODEX_MODELS_URL =
   'https://chatgpt.com/backend-api/codex/models?client_version=1.0.0';
 const OPENAI_CODEX_MODELS_TIMEOUT_MS = 10_000;
 
-type ProviderId = 'openai' | 'anthropic';
+type ProviderId = 'openai' | 'anthropic' | 'xai';
 type FlowStatus =
   | 'awaiting_browser'
   | 'awaiting_token'
