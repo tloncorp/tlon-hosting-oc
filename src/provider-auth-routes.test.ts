@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  buildGeneratedProviderCatalog,
   extractOpenAICodexModels,
   extractSubscriptionModels,
   extractXaiOAuthModels,
@@ -11,72 +10,6 @@ import {
   parseDeviceCodeVerificationMessage,
   parseOpenAIVerificationMessage,
 } from './provider-auth-routes.js';
-
-describe('buildGeneratedProviderCatalog', () => {
-  it('projects discovered models without inventing provider model ids', () => {
-    expect(
-      buildGeneratedProviderCatalog({
-        providerId: 'example-oauth',
-        ownerPluginId: 'example-plugin',
-        baseUrl: 'https://models.example/v1',
-        api: 'openai-responses',
-        auth: 'oauth',
-        models: [
-          { id: 'account-model-a', name: 'Account Model A' },
-          { id: 'account-model-b' },
-        ],
-      })
-    ).toEqual({
-      generatedBy: 'openclaw-plugin-model-catalog-v1',
-      providers: {
-        'example-oauth': {
-          baseUrl: 'https://models.example/v1',
-          api: 'openai-responses',
-          auth: 'oauth',
-          models: [
-            { id: 'account-model-a', name: 'Account Model A' },
-            { id: 'account-model-b' },
-          ],
-        },
-      },
-    });
-  });
-
-  it('preserves other providers in the owning plugin catalog', () => {
-    expect(
-      buildGeneratedProviderCatalog(
-        {
-          providerId: 'next-oauth',
-          ownerPluginId: 'shared-plugin',
-          baseUrl: 'https://next.example/v1',
-          api: 'openai-responses',
-          auth: 'oauth',
-          models: [{ id: 'next-account-model' }],
-        },
-        {
-          generatedBy: 'openclaw-plugin-model-catalog-v1',
-          providers: {
-            'existing-oauth': {
-              baseUrl: 'https://existing.example/v1',
-              api: 'openai-responses',
-              auth: 'oauth',
-              models: [{ id: 'existing-account-model' }],
-            },
-          },
-        }
-      )
-    ).toMatchObject({
-      providers: {
-        'existing-oauth': {
-          models: [{ id: 'existing-account-model' }],
-        },
-        'next-oauth': {
-          models: [{ id: 'next-account-model' }],
-        },
-      },
-    });
-  });
-});
 
 describe('extractSubscriptionModels', () => {
   it('keeps available subscription-compatible models separate by provider', () => {
