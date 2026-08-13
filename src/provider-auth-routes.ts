@@ -12,6 +12,7 @@ import {
 } from 'openclaw/plugin-sdk/agent-runtime';
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
+import { fetchLiveProviderModelRows } from 'openclaw/plugin-sdk/provider-catalog-live-runtime';
 import {
   removeProviderAuthProfilesWithLock,
   upsertAuthProfileWithLock,
@@ -31,6 +32,12 @@ const ANTHROPIC_PROFILE_ID = 'anthropic:default';
 const OPENAI_CODEX_MODELS_URL =
   'https://chatgpt.com/backend-api/codex/models?client_version=1.0.0';
 const OPENAI_CODEX_MODELS_TIMEOUT_MS = 10_000;
+const XAI_GROK_OAUTH_MODELS_URL =
+  'https://cli-chat-proxy.grok.com/v1/models';
+const XAI_GROK_OAUTH_MODELS_TIMEOUT_MS = 10_000;
+const XAI_OAUTH_FALLBACK_MODELS: SubscriptionModel[] = [
+  { id: 'grok-4.6', name: 'Grok 4.6' },
+];
 
 type ProviderId = 'openai' | 'anthropic' | 'xai';
 type DeviceCodeProviderId = Exclude<ProviderId, 'anthropic'>;
@@ -76,6 +83,7 @@ type SubscriptionModelCatalog = Partial<
   Record<ProviderId, SubscriptionModel[]>
 >;
 type ModelCatalogLoader = typeof loadModelCatalog;
+type LiveProviderModelRowsLoader = typeof fetchLiveProviderModelRows;
 
 function writeJson(res: ServerResponse, statusCode: number, payload: unknown) {
   res.statusCode = statusCode;
@@ -336,6 +344,72 @@ export function extractOpenAICodexModels(value: unknown): SubscriptionModel[] {
     const name = rawName.trim();
     return [{ id, ...(name ? { name } : {}) }];
   });
+}
+
+export function extractXaiOAuthModels(value: unknown): SubscriptionModel[] {
+  const rows = Array.isArray(value)
+    ? value
+    : value &&
+        typeof value === 'object' &&
+        Array.isArray((value as { data?: unknown }).data)
+      ? (value as { data: unknown[] }).data
+      : [];
+  const seen = new Set<string>();
+
+  return rows.flatMap((row) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      return [];
+    }
+    const model = row as Record<string, unknown>;
+    const rawId =
+      typeof model.id === 'string'
+        ? model.id
+        : typeof model.model === 'string'
+          ? model.model
+          : '';
+    const id = rawId.trim();
+    if (
+      !id ||
+      seen.has(id) ||
+      id.includes('multi-agent') ||
+      id === 'grok-imagine-image' ||
+      id === 'grok-imagine-image-quality'
+    ) {
+      return [];
+    }
+
+    const rawBackend =
+      typeof model.api_backend === 'string'
+        ? model.api_backend
+        : typeof model.apiBackend === 'string'
+          ? model.apiBackend
+          : typeof model.backend === 'string'
+            ? model.backend
+            : '';
+    const backend = rawBackend.trim().toLowerCase();
+    if (backend && !['responses', 'chat', 'language'].includes(backend)) {
+      return [];
+    }
+
+    seen.add(id);
+    const rawName = typeof model.name === 'string' ? model.name : '';
+    const name = rawName.trim();
+    return [{ id, ...(name ? { name } : {}) }];
+  });
+}
+
+export async function fetchXaiOAuthSubscriptionModels(
+  discoveryApiKey: string,
+  loadRows: LiveProviderModelRowsLoader = fetchLiveProviderModelRows
+): Promise<SubscriptionModel[]> {
+  const rows = await loadRows({
+    providerId: 'xai',
+    endpoint: XAI_GROK_OAUTH_MODELS_URL,
+    discoveryApiKey,
+    timeoutMs: XAI_GROK_OAUTH_MODELS_TIMEOUT_MS,
+    auditContext: 'tlon-xai-oauth-model-discovery',
+  });
+  return extractXaiOAuthModels(rows);
 }
 
 function errorMessage(error: unknown, secret?: string): string {
@@ -652,6 +726,72 @@ async function loadOpenAISubscriptionModels(
   return models;
 }
 
+async function loadXaiSubscriptionModels(
+  api: OpenClawPluginApi
+): Promise<SubscriptionModel[]> {
+  const cfg = api.runtime.config.current() as OpenClawConfig;
+  const agentDir = resolveDefaultAgentDir(cfg);
+  const store = ensureAuthProfileStore(agentDir, {
+    allowKeychainPrompt: false,
+    config: cfg,
+  });
+  const models: SubscriptionModel[] = [];
+  const seen = new Set<string>();
+  let hasOAuthProfile = false;
+
+  for (const profileId of listProfilesForProvider(store, 'xai')) {
+    const credential = store.profiles[profileId];
+    if (credential?.type !== 'oauth') {
+      continue;
+    }
+    hasOAuthProfile = true;
+    try {
+      const resolved = await resolveApiKeyForProfile({
+        cfg,
+        store,
+        profileId,
+        agentDir,
+      });
+      if (!resolved?.apiKey || resolved.profileType !== 'oauth') {
+        continue;
+      }
+      const discovered = await fetchXaiOAuthSubscriptionModels(
+        resolved.apiKey
+      );
+      if (discovered.length === 0) {
+        api.logger.warn(
+          `[tlon-hosting] xAI OAuth model discovery returned no chat models for ${profileId}; using the managed fallback`
+        );
+      } else {
+        api.logger.info(
+          `[tlon-hosting] xAI OAuth model discovery returned ${discovered.length} model(s) for ${profileId}`
+        );
+      }
+      for (const model of discovered) {
+        if (!seen.has(model.id)) {
+          seen.add(model.id);
+          models.push(model);
+        }
+      }
+    } catch (error) {
+      api.logger.warn(
+        `[tlon-hosting] xAI OAuth model discovery failed for ${profileId}: ${errorMessage(
+          error
+        )}`
+      );
+    }
+  }
+
+  // OpenClaw 2026.7.1 does not expose the bundled xAI catalog through its
+  // generic loadModelCatalog path. Keep Horizon usable if xAI's live catalog
+  // is temporarily unavailable, but only after an OAuth profile exists.
+  return models.length > 0
+    ? models
+    : hasOAuthProfile
+      ? XAI_OAUTH_FALLBACK_MODELS
+      : [];
+}
+
 export async function loadFreshSubscriptionModels(
   api: OpenClawPluginApi,
   loadCatalog: ModelCatalogLoader = loadModelCatalog
@@ -677,14 +817,15 @@ export async function loadFreshSubscriptionModels(
 async function loadSubscriptionModelCatalog(
   api: OpenClawPluginApi
 ): Promise<SubscriptionModelCatalog> {
-  const [openai, providerCatalog] = await Promise.all([
+  const [openai, xai, providerCatalog] = await Promise.all([
     loadOpenAISubscriptionModels(api),
+    loadXaiSubscriptionModels(api),
     loadFreshSubscriptionModels(api),
   ]);
   return {
     openai,
     anthropic: providerCatalog.anthropic ?? [],
-    xai: providerCatalog.xai ?? [],
+    xai,
   };
 }
 

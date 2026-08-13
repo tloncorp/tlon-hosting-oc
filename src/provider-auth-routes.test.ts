@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   extractOpenAICodexModels,
   extractSubscriptionModels,
+  extractXaiOAuthModels,
+  fetchXaiOAuthSubscriptionModels,
   isManagedConfigLockPermissionError,
   loadFreshSubscriptionModels,
   parseDeviceCodeVerificationMessage,
@@ -134,8 +136,8 @@ describe('loadFreshSubscriptionModels', () => {
     const loadCatalog = vi.fn(async () => [
       {
         provider: 'xai',
-        id: 'grok-4.3',
-        name: 'Grok 4.3',
+        id: 'grok-4.6',
+        name: 'Grok 4.6',
         api: 'openai-responses',
       },
     ]);
@@ -149,7 +151,7 @@ describe('loadFreshSubscriptionModels', () => {
     ).resolves.toEqual({
       openai: [],
       anthropic: [],
-      xai: [{ id: 'grok-4.3', name: 'Grok 4.3' }],
+      xai: [{ id: 'grok-4.6', name: 'Grok 4.6' }],
     });
     expect(loadCatalog).toHaveBeenCalledWith({
       config,
@@ -176,6 +178,54 @@ describe('loadFreshSubscriptionModels', () => {
     expect(warn).toHaveBeenCalledWith(
       '[tlon-hosting] Subscription model catalog load failed: discovery unavailable'
     );
+  });
+});
+
+describe('extractXaiOAuthModels', () => {
+  it('returns chat-capable models from xAI OAuth discovery', () => {
+    expect(
+      extractXaiOAuthModels([
+        { id: 'grok-4.6', name: 'Grok 4.6', api_backend: 'responses' },
+        { model: 'grok-code-fast-1', backend: 'chat' },
+        { id: 'grok-imagine-image' },
+        { id: 'grok-4.20-multi-agent', backend: 'language' },
+        { id: 'grok-voice', backend: 'audio' },
+      ])
+    ).toEqual([
+      { id: 'grok-4.6', name: 'Grok 4.6' },
+      { id: 'grok-code-fast-1' },
+    ]);
+  });
+
+  it('accepts the OpenAI-compatible data envelope and deduplicates ids', () => {
+    expect(
+      extractXaiOAuthModels({
+        data: [
+          { id: 'grok-4.6', object: 'model' },
+          { id: 'grok-4.6', name: 'Duplicate' },
+          null,
+        ],
+      })
+    ).toEqual([{ id: 'grok-4.6' }]);
+  });
+});
+
+describe('fetchXaiOAuthSubscriptionModels', () => {
+  it('loads the account model list directly with the OAuth access token', async () => {
+    const loadRows = vi.fn(async () => [
+      { id: 'grok-4.6', name: 'Grok 4.6' },
+    ]);
+
+    await expect(
+      fetchXaiOAuthSubscriptionModels('oauth-access-token', loadRows as never)
+    ).resolves.toEqual([{ id: 'grok-4.6', name: 'Grok 4.6' }]);
+    expect(loadRows).toHaveBeenCalledWith({
+      providerId: 'xai',
+      endpoint: 'https://cli-chat-proxy.grok.com/v1/models',
+      discoveryApiKey: 'oauth-access-token',
+      timeoutMs: 10_000,
+      auditContext: 'tlon-xai-oauth-model-discovery',
+    });
   });
 });
 
