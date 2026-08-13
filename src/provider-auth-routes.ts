@@ -5,6 +5,8 @@ import {
   clearRuntimeAuthProfileStoreSnapshots,
   ensureAuthProfileStore,
   listProfilesForProvider,
+  loadModelCatalog,
+  resetModelCatalogCache,
   resolveApiKeyForProfile,
   resolveDefaultAgentDir,
 } from 'openclaw/plugin-sdk/agent-runtime';
@@ -73,6 +75,7 @@ type SubscriptionModel = {
 type SubscriptionModelCatalog = Partial<
   Record<ProviderId, SubscriptionModel[]>
 >;
+type ModelCatalogLoader = typeof loadModelCatalog;
 
 function writeJson(res: ServerResponse, statusCode: number, payload: unknown) {
   res.statusCode = statusCode;
@@ -462,6 +465,7 @@ async function runDeviceCodeFlow(
       isRemote: true,
       openUrl: async () => {},
     });
+    await refreshGatewayAuthState(api);
     updateFlow(flowId, { status: 'complete' });
   } catch (error) {
     // OpenClaw 7.1 persists the auth profile before applying the provider's
@@ -472,6 +476,7 @@ async function runDeviceCodeFlow(
       api.logger.info(
         `[tlon-hosting] ${provider} auth saved; skipped optional root-managed config patch`
       );
+      await refreshGatewayAuthState(api);
       updateFlow(flowId, { status: 'complete' });
       return;
     }
@@ -558,10 +563,23 @@ async function refreshExpiredOAuthProfiles(api: OpenClawPluginApi) {
   }
 }
 
-async function refreshGatewayAuthState(api: OpenClawPluginApi) {
+async function requestFreshGatewayAuthState(api: OpenClawPluginApi) {
   clearRuntimeAuthProfileStoreSnapshots();
   try {
-    await api.runtime.gateway.request('models.authStatus', { refresh: true });
+    return await api.runtime.gateway.request('models.authStatus', {
+      refresh: true,
+    });
+  } finally {
+    // Provider model catalogs depend on the active auth profile. OpenClaw's
+    // catalog cache otherwise retains the pre-login result until a config or
+    // plugin reload, which leaves newly connected providers with no models.
+    resetModelCatalogCache();
+  }
+}
+
+async function refreshGatewayAuthState(api: OpenClawPluginApi) {
+  try {
+    await requestFreshGatewayAuthState(api);
   } catch (error) {
     api.logger.warn(
       `[tlon-hosting] Provider auth state refresh failed: ${errorMessage(error)}`
@@ -634,27 +652,39 @@ async function loadOpenAISubscriptionModels(
   return models;
 }
 
+export async function loadFreshSubscriptionModels(
+  api: OpenClawPluginApi,
+  loadCatalog: ModelCatalogLoader = loadModelCatalog
+): Promise<SubscriptionModelCatalog> {
+  const cfg = api.runtime.config.current() as OpenClawConfig;
+  try {
+    const models = await loadCatalog({
+      config: cfg,
+      readOnly: false,
+      useCache: false,
+    });
+    return extractSubscriptionModels({ models });
+  } catch (error) {
+    api.logger.warn(
+      `[tlon-hosting] Subscription model catalog load failed: ${errorMessage(
+        error
+      )}`
+    );
+    return extractSubscriptionModels({});
+  }
+}
+
 async function loadSubscriptionModelCatalog(
   api: OpenClawPluginApi
 ): Promise<SubscriptionModelCatalog> {
-  const [openai, gatewayResult] = await Promise.all([
+  const [openai, providerCatalog] = await Promise.all([
     loadOpenAISubscriptionModels(api),
-    api.runtime.gateway
-      .request('models.list', { view: 'all' })
-      .catch((error: unknown) => {
-        api.logger.warn(
-          `[tlon-hosting] Subscription model catalog load failed: ${errorMessage(
-            error
-          )}`
-        );
-        return {};
-      }),
+    loadFreshSubscriptionModels(api),
   ]);
-  const gatewayCatalog = extractSubscriptionModels(gatewayResult);
   return {
     openai,
-    anthropic: gatewayCatalog.anthropic ?? [],
-    xai: gatewayCatalog.xai ?? [],
+    anthropic: providerCatalog.anthropic ?? [],
+    xai: providerCatalog.xai ?? [],
   };
 }
 
@@ -760,12 +790,10 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
       try {
         if (req.method === 'GET' && suffix === '/status') {
           await refreshExpiredOAuthProfiles(api);
-          const [result, subscriptionModels] = await Promise.all([
-            api.runtime.gateway.request('models.authStatus', {
-              refresh: true,
-            }),
-            loadSubscriptionModelCatalog(api),
-          ]);
+          // Refresh auth first so auth-dependent provider catalogs (notably
+          // xAI OAuth) cannot race model discovery with stale credentials.
+          const result = await requestFreshGatewayAuthState(api);
+          const subscriptionModels = await loadSubscriptionModelCatalog(api);
           const status = includeDetectedAuthFailures(api, result);
           writeJson(res, 200, {
             ...(status && typeof status === 'object' ? status : {}),
