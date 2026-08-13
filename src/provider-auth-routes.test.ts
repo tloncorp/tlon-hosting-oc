@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  buildGeneratedProviderCatalog,
   extractOpenAICodexModels,
   extractSubscriptionModels,
   extractXaiOAuthModels,
@@ -10,6 +11,72 @@ import {
   parseDeviceCodeVerificationMessage,
   parseOpenAIVerificationMessage,
 } from './provider-auth-routes.js';
+
+describe('buildGeneratedProviderCatalog', () => {
+  it('projects discovered models without inventing provider model ids', () => {
+    expect(
+      buildGeneratedProviderCatalog({
+        providerId: 'example-oauth',
+        ownerPluginId: 'example-plugin',
+        baseUrl: 'https://models.example/v1',
+        api: 'openai-responses',
+        auth: 'oauth',
+        models: [
+          { id: 'account-model-a', name: 'Account Model A' },
+          { id: 'account-model-b' },
+        ],
+      })
+    ).toEqual({
+      generatedBy: 'openclaw-plugin-model-catalog-v1',
+      providers: {
+        'example-oauth': {
+          baseUrl: 'https://models.example/v1',
+          api: 'openai-responses',
+          auth: 'oauth',
+          models: [
+            { id: 'account-model-a', name: 'Account Model A' },
+            { id: 'account-model-b' },
+          ],
+        },
+      },
+    });
+  });
+
+  it('preserves other providers in the owning plugin catalog', () => {
+    expect(
+      buildGeneratedProviderCatalog(
+        {
+          providerId: 'next-oauth',
+          ownerPluginId: 'shared-plugin',
+          baseUrl: 'https://next.example/v1',
+          api: 'openai-responses',
+          auth: 'oauth',
+          models: [{ id: 'next-account-model' }],
+        },
+        {
+          generatedBy: 'openclaw-plugin-model-catalog-v1',
+          providers: {
+            'existing-oauth': {
+              baseUrl: 'https://existing.example/v1',
+              api: 'openai-responses',
+              auth: 'oauth',
+              models: [{ id: 'existing-account-model' }],
+            },
+          },
+        }
+      )
+    ).toMatchObject({
+      providers: {
+        'existing-oauth': {
+          models: [{ id: 'existing-account-model' }],
+        },
+        'next-oauth': {
+          models: [{ id: 'next-account-model' }],
+        },
+      },
+    });
+  });
+});
 
 describe('extractSubscriptionModels', () => {
   it('keeps available subscription-compatible models separate by provider', () => {
@@ -53,8 +120,8 @@ describe('extractSubscriptionModels', () => {
           },
           {
             provider: 'xai',
-            id: 'grok-4.6',
-            name: 'Grok 4.6',
+            id: 'grok-account-model',
+            name: 'Grok Account Model',
             api: 'openai-responses',
             available: true,
           },
@@ -66,7 +133,7 @@ describe('extractSubscriptionModels', () => {
         { id: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
         { id: 'claude-opus-4-8', name: 'Claude Opus 4.8' },
       ],
-      xai: [{ id: 'grok-4.6', name: 'Grok 4.6' }],
+      xai: [{ id: 'grok-account-model', name: 'Grok Account Model' }],
     });
   });
 
@@ -89,15 +156,15 @@ describe('extractSubscriptionModels', () => {
             name: 'Claude Sonnet 5',
           },
           {
-            key: 'xai/grok-4.6',
-            name: 'Grok 4.6',
+            key: 'xai/grok-account-model',
+            name: 'Grok Account Model',
           },
         ],
       })
     ).toEqual({
       openai: [{ id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }],
       anthropic: [{ id: 'claude-sonnet-5', name: 'Claude Sonnet 5' }],
-      xai: [{ id: 'grok-4.6', name: 'Grok 4.6' }],
+      xai: [{ id: 'grok-account-model', name: 'Grok Account Model' }],
     });
   });
 
@@ -136,8 +203,8 @@ describe('loadFreshSubscriptionModels', () => {
     const loadCatalog = vi.fn(async () => [
       {
         provider: 'xai',
-        id: 'grok-4.6',
-        name: 'Grok 4.6',
+        id: 'grok-account-model',
+        name: 'Grok Account Model',
         api: 'openai-responses',
       },
     ]);
@@ -151,7 +218,7 @@ describe('loadFreshSubscriptionModels', () => {
     ).resolves.toEqual({
       openai: [],
       anthropic: [],
-      xai: [{ id: 'grok-4.6', name: 'Grok 4.6' }],
+      xai: [{ id: 'grok-account-model', name: 'Grok Account Model' }],
     });
     expect(loadCatalog).toHaveBeenCalledWith({
       config,
@@ -185,14 +252,18 @@ describe('extractXaiOAuthModels', () => {
   it('returns chat-capable models from xAI OAuth discovery', () => {
     expect(
       extractXaiOAuthModels([
-        { id: 'grok-4.6', name: 'Grok 4.6', api_backend: 'responses' },
+        {
+          id: 'grok-account-model',
+          name: 'Grok Account Model',
+          api_backend: 'responses',
+        },
         { model: 'grok-code-fast-1', backend: 'chat' },
         { id: 'grok-imagine-image' },
         { id: 'grok-4.20-multi-agent', backend: 'language' },
         { id: 'grok-voice', backend: 'audio' },
       ])
     ).toEqual([
-      { id: 'grok-4.6', name: 'Grok 4.6' },
+      { id: 'grok-account-model', name: 'Grok Account Model' },
       { id: 'grok-code-fast-1' },
     ]);
   });
@@ -201,24 +272,26 @@ describe('extractXaiOAuthModels', () => {
     expect(
       extractXaiOAuthModels({
         data: [
-          { id: 'grok-4.6', object: 'model' },
-          { id: 'grok-4.6', name: 'Duplicate' },
+          { id: 'grok-account-model', object: 'model' },
+          { id: 'grok-account-model', name: 'Duplicate' },
           null,
         ],
       })
-    ).toEqual([{ id: 'grok-4.6' }]);
+    ).toEqual([{ id: 'grok-account-model' }]);
   });
 });
 
 describe('fetchXaiOAuthSubscriptionModels', () => {
   it('loads the account model list directly with the OAuth access token', async () => {
     const loadRows = vi.fn(async () => [
-      { id: 'grok-4.6', name: 'Grok 4.6' },
+      { id: 'grok-account-model', name: 'Grok Account Model' },
     ]);
 
     await expect(
       fetchXaiOAuthSubscriptionModels('oauth-access-token', loadRows as never)
-    ).resolves.toEqual([{ id: 'grok-4.6', name: 'Grok 4.6' }]);
+    ).resolves.toEqual([
+      { id: 'grok-account-model', name: 'Grok Account Model' },
+    ]);
     expect(loadRows).toHaveBeenCalledWith({
       providerId: 'xai',
       endpoint: 'https://cli-chat-proxy.grok.com/v1/models',

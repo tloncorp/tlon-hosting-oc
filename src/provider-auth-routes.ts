@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import {
+  chmod,
+  mkdir,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { dirname, join } from 'node:path';
 import {
   clearAuthProfileCooldown,
   clearRuntimeAuthProfileStoreSnapshots,
@@ -35,9 +44,8 @@ const OPENAI_CODEX_MODELS_TIMEOUT_MS = 10_000;
 const XAI_GROK_OAUTH_MODELS_URL =
   'https://cli-chat-proxy.grok.com/v1/models';
 const XAI_GROK_OAUTH_MODELS_TIMEOUT_MS = 10_000;
-const XAI_OAUTH_FALLBACK_MODELS: SubscriptionModel[] = [
-  { id: 'grok-4.6', name: 'Grok 4.6' },
-];
+const GENERATED_PROVIDER_CATALOG_MARKER =
+  'openclaw-plugin-model-catalog-v1';
 
 type ProviderId = 'openai' | 'anthropic' | 'xai';
 type DeviceCodeProviderId = Exclude<ProviderId, 'anthropic'>;
@@ -84,6 +92,24 @@ type SubscriptionModelCatalog = Partial<
 >;
 type ModelCatalogLoader = typeof loadModelCatalog;
 type LiveProviderModelRowsLoader = typeof fetchLiveProviderModelRows;
+
+type ProviderCatalogProjection = {
+  providerId: string;
+  ownerPluginId: string;
+  baseUrl: string;
+  api: string;
+  auth: 'oauth';
+  models: SubscriptionModel[];
+};
+
+type OAuthSubscriptionModelAdapter = {
+  providerId: DeviceCodeProviderId;
+  displayName: string;
+  catalogOwnerPluginId: string;
+  catalogBaseUrl: string;
+  catalogApi: string;
+  discoverModels: (accessToken: string) => Promise<SubscriptionModel[]>;
+};
 
 function writeJson(res: ServerResponse, statusCode: number, payload: unknown) {
   res.statusCode = statusCode;
@@ -412,6 +438,63 @@ export async function fetchXaiOAuthSubscriptionModels(
   return extractXaiOAuthModels(rows);
 }
 
+export function buildGeneratedProviderCatalog(
+  projection: ProviderCatalogProjection,
+  existing?: unknown
+): Record<string, unknown> {
+  const existingRecord =
+    existing && typeof existing === 'object' && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : undefined;
+  const existingProviders =
+    existingRecord?.generatedBy === GENERATED_PROVIDER_CATALOG_MARKER &&
+    existingRecord.providers &&
+    typeof existingRecord.providers === 'object' &&
+    !Array.isArray(existingRecord.providers)
+      ? (existingRecord.providers as Record<string, unknown>)
+      : {};
+  return {
+    generatedBy: GENERATED_PROVIDER_CATALOG_MARKER,
+    providers: {
+      ...existingProviders,
+      [projection.providerId]: {
+        baseUrl: projection.baseUrl,
+        api: projection.api,
+        auth: projection.auth,
+        models: projection.models.map((model) => ({ ...model })),
+      },
+    },
+  };
+}
+
+async function persistProviderCatalogProjection(
+  agentDir: string,
+  projection: ProviderCatalogProjection
+): Promise<void> {
+  const targetPath = join(
+    agentDir,
+    'plugins',
+    encodeURIComponent(projection.ownerPluginId),
+    'catalog.json'
+  );
+  const temporaryPath = `${targetPath}.${randomUUID()}.tmp`;
+  await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
+  const existing = await readFile(targetPath, 'utf8')
+    .then((value) => JSON.parse(value) as unknown)
+    .catch(() => undefined);
+  try {
+    await writeFile(
+      temporaryPath,
+      `${JSON.stringify(buildGeneratedProviderCatalog(projection, existing), null, 2)}\n`,
+      { encoding: 'utf8', mode: 0o600 }
+    );
+    await rename(temporaryPath, targetPath);
+  } finally {
+    await unlink(temporaryPath).catch(() => undefined);
+  }
+  await chmod(targetPath, 0o600);
+}
+
 function errorMessage(error: unknown, secret?: string): string {
   const raw = error instanceof Error ? error.message : String(error);
   return secret ? raw.split(secret).join('[redacted]') : raw;
@@ -540,6 +623,7 @@ async function runDeviceCodeFlow(
       openUrl: async () => {},
     });
     await refreshGatewayAuthState(api);
+    await refreshSubscriptionModelProjection(api, provider);
     updateFlow(flowId, { status: 'complete' });
   } catch (error) {
     // OpenClaw 7.1 persists the auth profile before applying the provider's
@@ -551,6 +635,7 @@ async function runDeviceCodeFlow(
         `[tlon-hosting] ${provider} auth saved; skipped optional root-managed config patch`
       );
       await refreshGatewayAuthState(api);
+      await refreshSubscriptionModelProjection(api, provider);
       updateFlow(flowId, { status: 'complete' });
       return;
     }
@@ -726,8 +811,9 @@ async function loadOpenAISubscriptionModels(
   return models;
 }
 
-async function loadXaiSubscriptionModels(
-  api: OpenClawPluginApi
+async function loadOAuthSubscriptionModels(
+  api: OpenClawPluginApi,
+  adapter: OAuthSubscriptionModelAdapter
 ): Promise<SubscriptionModel[]> {
   const cfg = api.runtime.config.current() as OpenClawConfig;
   const agentDir = resolveDefaultAgentDir(cfg);
@@ -739,7 +825,7 @@ async function loadXaiSubscriptionModels(
   const seen = new Set<string>();
   let hasOAuthProfile = false;
 
-  for (const profileId of listProfilesForProvider(store, 'xai')) {
+  for (const profileId of listProfilesForProvider(store, adapter.providerId)) {
     const credential = store.profiles[profileId];
     if (credential?.type !== 'oauth') {
       continue;
@@ -755,16 +841,14 @@ async function loadXaiSubscriptionModels(
       if (!resolved?.apiKey || resolved.profileType !== 'oauth') {
         continue;
       }
-      const discovered = await fetchXaiOAuthSubscriptionModels(
-        resolved.apiKey
-      );
+      const discovered = await adapter.discoverModels(resolved.apiKey);
       if (discovered.length === 0) {
         api.logger.warn(
-          `[tlon-hosting] xAI OAuth model discovery returned no chat models for ${profileId}; using the managed fallback`
+          `[tlon-hosting] ${adapter.displayName} OAuth model discovery returned no chat models for ${profileId}`
         );
       } else {
         api.logger.info(
-          `[tlon-hosting] xAI OAuth model discovery returned ${discovered.length} model(s) for ${profileId}`
+          `[tlon-hosting] ${adapter.displayName} OAuth model discovery returned ${discovered.length} model(s) for ${profileId}`
         );
       }
       for (const model of discovered) {
@@ -775,21 +859,62 @@ async function loadXaiSubscriptionModels(
       }
     } catch (error) {
       api.logger.warn(
-        `[tlon-hosting] xAI OAuth model discovery failed for ${profileId}: ${errorMessage(
+        `[tlon-hosting] ${adapter.displayName} OAuth model discovery failed for ${profileId}: ${errorMessage(
           error
         )}`
       );
     }
   }
 
-  // OpenClaw 2026.7.1 does not expose the bundled xAI catalog through its
-  // generic loadModelCatalog path. Keep Horizon usable if xAI's live catalog
-  // is temporarily unavailable, but only after an OAuth profile exists.
-  return models.length > 0
-    ? models
-    : hasOAuthProfile
-      ? XAI_OAUTH_FALLBACK_MODELS
-      : [];
+  if (models.length > 0) {
+    // Project live OAuth discovery into OpenClaw's standard provider-owned
+    // catalog sidecar. Read-only consumers such as `/models` then see the same
+    // rows as Horizon, without baking model ids into the hosting plugin.
+    try {
+      await persistProviderCatalogProjection(agentDir, {
+        providerId: adapter.providerId,
+        ownerPluginId: adapter.catalogOwnerPluginId,
+        baseUrl: adapter.catalogBaseUrl,
+        api: adapter.catalogApi,
+        auth: 'oauth',
+        models,
+      });
+      resetModelCatalogCache();
+    } catch (error) {
+      api.logger.warn(
+        `[tlon-hosting] Failed to project ${adapter.displayName} OAuth models into the OpenClaw catalog: ${errorMessage(
+          error
+        )}`
+      );
+    }
+  } else if (hasOAuthProfile) {
+    api.logger.warn(
+      `[tlon-hosting] ${adapter.displayName} OAuth is connected but exposed no selectable models`
+    );
+  }
+  return models;
+}
+
+const xaiOAuthModelAdapter: OAuthSubscriptionModelAdapter = {
+  providerId: 'xai',
+  displayName: 'xAI',
+  catalogOwnerPluginId: 'xai',
+  catalogBaseUrl: 'https://cli-chat-proxy.grok.com/v1',
+  catalogApi: 'openai-responses',
+  discoverModels: fetchXaiOAuthSubscriptionModels,
+};
+
+const subscriptionModelProjectionRefreshers: Partial<
+  Record<ProviderId, (api: OpenClawPluginApi) => Promise<unknown>>
+> = {
+  xai: (api) => loadOAuthSubscriptionModels(api, xaiOAuthModelAdapter),
+};
+
+async function refreshSubscriptionModelProjection(
+  api: OpenClawPluginApi,
+  provider: ProviderId
+): Promise<void> {
+  await subscriptionModelProjectionRefreshers[provider]?.(api);
 }
 
 export async function loadFreshSubscriptionModels(
@@ -817,11 +942,13 @@ export async function loadFreshSubscriptionModels(
 async function loadSubscriptionModelCatalog(
   api: OpenClawPluginApi
 ): Promise<SubscriptionModelCatalog> {
-  const [openai, xai, providerCatalog] = await Promise.all([
+  const [openai, providerCatalog] = await Promise.all([
     loadOpenAISubscriptionModels(api),
-    loadXaiSubscriptionModels(api),
     loadFreshSubscriptionModels(api),
   ]);
+  // Persist provider-owned OAuth catalogs after the generic catalog refresh,
+  // which may rewrite OpenClaw's generated catalog sidecars.
+  const xai = await loadOAuthSubscriptionModels(api, xaiOAuthModelAdapter);
   return {
     openai,
     anthropic: providerCatalog.anthropic ?? [],
@@ -918,6 +1045,20 @@ function createFlow(provider: ProviderId): ProviderAuthFlow {
 }
 
 export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
+  api.registerService({
+    id: 'tlon-hosting-subscription-model-catalog',
+    start: async () => {
+      try {
+        await refreshSubscriptionModelProjection(api, 'xai');
+      } catch (error) {
+        api.logger.warn(
+          `[tlon-hosting] Initial subscription model catalog refresh failed: ${errorMessage(
+            error
+          )}`
+        );
+      }
+    },
+  });
   api.registerHttpRoute({
     path: PROVIDER_AUTH_ROUTE,
     auth: 'gateway',
