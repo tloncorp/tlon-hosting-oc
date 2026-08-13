@@ -6,7 +6,6 @@ import {
   extractXaiOAuthModels,
   fetchXaiOAuthSubscriptionModels,
   isManagedConfigLockPermissionError,
-  loadFreshSubscriptionModels,
   parseDeviceCodeVerificationMessage,
   parseOpenAIVerificationMessage,
 } from './provider-auth-routes.js';
@@ -127,57 +126,6 @@ describe('extractSubscriptionModels', () => {
       anthropic: [],
       xai: [],
     });
-  });
-});
-
-describe('loadFreshSubscriptionModels', () => {
-  it('bypasses the pre-login catalog cache for auth-dependent providers', async () => {
-    const config = { plugins: { allow: ['xai'] } };
-    const loadCatalog = vi.fn(async () => [
-      {
-        provider: 'xai',
-        id: 'grok-account-model',
-        name: 'Grok Account Model',
-        api: 'openai-responses',
-      },
-    ]);
-    const api = {
-      runtime: { config: { current: () => config } },
-      logger: { warn: vi.fn() },
-    };
-
-    await expect(
-      loadFreshSubscriptionModels(api as never, loadCatalog as never)
-    ).resolves.toEqual({
-      openai: [],
-      anthropic: [],
-      xai: [{ id: 'grok-account-model', name: 'Grok Account Model' }],
-    });
-    expect(loadCatalog).toHaveBeenCalledWith({
-      config,
-      readOnly: false,
-      useCache: false,
-    });
-  });
-
-  it('logs discovery failures and returns an empty catalog', async () => {
-    const warn = vi.fn();
-    const api = {
-      runtime: { config: { current: () => ({}) } },
-      logger: { warn },
-    };
-
-    await expect(
-      loadFreshSubscriptionModels(
-        api as never,
-        vi.fn(async () => {
-          throw new Error('discovery unavailable');
-        }) as never
-      )
-    ).resolves.toEqual({ openai: [], anthropic: [], xai: [] });
-    expect(warn).toHaveBeenCalledWith(
-      '[tlon-hosting] Subscription model catalog load failed: discovery unavailable'
-    );
   });
 });
 

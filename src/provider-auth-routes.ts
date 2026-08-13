@@ -5,8 +5,6 @@ import {
   clearRuntimeAuthProfileStoreSnapshots,
   ensureAuthProfileStore,
   listProfilesForProvider,
-  loadModelCatalog,
-  resetModelCatalogCache,
   resolveApiKeyForProfile,
   resolveDefaultAgentDir,
 } from 'openclaw/plugin-sdk/agent-runtime';
@@ -79,7 +77,6 @@ type SubscriptionModel = {
 type SubscriptionModelCatalog = Partial<
   Record<ProviderId, SubscriptionModel[]>
 >;
-type ModelCatalogLoader = typeof loadModelCatalog;
 type LiveProviderModelRowsLoader = typeof fetchLiveProviderModelRows;
 
 type OAuthSubscriptionModelAdapter = {
@@ -642,16 +639,9 @@ async function refreshExpiredOAuthProfiles(api: OpenClawPluginApi) {
 
 async function requestFreshGatewayAuthState(api: OpenClawPluginApi) {
   clearRuntimeAuthProfileStoreSnapshots();
-  try {
-    return await api.runtime.gateway.request('models.authStatus', {
-      refresh: true,
-    });
-  } finally {
-    // Provider model catalogs depend on the active auth profile. OpenClaw's
-    // catalog cache otherwise retains the pre-login result until a config or
-    // plugin reload, which leaves newly connected providers with no models.
-    resetModelCatalogCache();
-  }
+  return await api.runtime.gateway.request('models.authStatus', {
+    refresh: true,
+  });
 }
 
 async function refreshGatewayAuthState(api: OpenClawPluginApi) {
@@ -794,39 +784,27 @@ const xaiOAuthModelAdapter: OAuthSubscriptionModelAdapter = {
   discoverModels: fetchXaiOAuthSubscriptionModels,
 };
 
-export async function loadFreshSubscriptionModels(
-  api: OpenClawPluginApi,
-  loadCatalog: ModelCatalogLoader = loadModelCatalog
-): Promise<SubscriptionModelCatalog> {
-  const cfg = api.runtime.config.current() as OpenClawConfig;
-  try {
-    const models = await loadCatalog({
-      config: cfg,
-      readOnly: false,
-      useCache: false,
-    });
-    return extractSubscriptionModels({ models });
-  } catch (error) {
-    api.logger.warn(
-      `[tlon-hosting] Subscription model catalog load failed: ${errorMessage(
-        error
-      )}`
-    );
-    return extractSubscriptionModels({});
-  }
-}
-
 async function loadSubscriptionModelCatalog(
   api: OpenClawPluginApi
 ): Promise<SubscriptionModelCatalog> {
-  const [openai, xai, providerCatalog] = await Promise.all([
+  const [openai, xai, gatewayResult] = await Promise.all([
     loadOpenAISubscriptionModels(api),
     loadOAuthSubscriptionModels(api, xaiOAuthModelAdapter),
-    loadFreshSubscriptionModels(api),
+    api.runtime.gateway
+      .request('models.list', { view: 'all' })
+      .catch((error: unknown) => {
+        api.logger.warn(
+          `[tlon-hosting] Anthropic subscription model catalog load failed: ${errorMessage(
+            error
+          )}`
+        );
+        return {};
+      }),
   ]);
+  const gatewayCatalog = extractSubscriptionModels(gatewayResult);
   return {
     openai,
-    anthropic: providerCatalog.anthropic ?? [],
+    anthropic: gatewayCatalog.anthropic ?? [],
     xai,
   };
 }
