@@ -3,7 +3,7 @@
 OpenClaw plugin for Tlon's hosted OpenClaw control plane.
 
 It exposes the gateway-authenticated `/tlon/provider-auth/*` routes used by
-Pioneer and registers OpenClaw's bundled OpenAI and Anthropic provider
+Pioneer and registers OpenClaw's bundled OpenAI, Anthropic, and xAI provider
 runtimes when Tlon's managed plugin allowlist would otherwise omit them.
 It also repairs cron-requested `operator.admin` device scopes at gateway
 startup and migrates hosted cron jobs and persisted session model selections to
@@ -29,6 +29,11 @@ GET/DELETE requests and JSON field for POST requests). Login flows are bound to
 that agent, and polling or completing a flow as another agent returns “not
 found.” Auth status, refresh, model discovery, token storage, and disconnects
 all use the selected agent's auth directory.
+
+`GET /tlon/provider-auth/health?agentId=<id>` is the lightweight shared-mode
+readiness handshake used by Pioneer. It returns `running: true` only after the
+agent resolves to exactly one configured Tlon account binding. Like the other
+routes, it requires gateway authentication and is not a public health endpoint.
 
 Hosted prompt sync also follows exact Tlon account bindings in monolithic
 mode, updating each agent workspace with interpolation values from its own

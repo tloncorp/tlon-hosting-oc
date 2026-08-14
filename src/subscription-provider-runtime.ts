@@ -61,7 +61,15 @@ export function registerSubscriptionProviderRuntimes(
 
   try {
     const config = withProviderRuntimeAllowlist(api.config, missingProviders);
-    const workspaceDir = config.agents?.defaults?.workspace;
+    // Provider runtimes are gateway-global. In monolithic mode, never use one
+    // tenant's default workspace as the plugin-discovery root for every other
+    // tenant on the shard.
+    const monolithic =
+      (config.channels?.tlon as { deploymentMode?: string } | undefined)
+        ?.deploymentMode === 'monolithic';
+    const workspaceDir = monolithic
+      ? undefined
+      : config.agents?.defaults?.workspace;
     const providers = resolveProviders({
       config,
       providerRefs: missingProviders,

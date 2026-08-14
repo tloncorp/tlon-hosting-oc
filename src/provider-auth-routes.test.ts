@@ -1,3 +1,5 @@
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -8,8 +10,79 @@ import {
   isManagedConfigLockPermissionError,
   parseDeviceCodeVerificationMessage,
   parseOpenAIVerificationMessage,
+  registerProviderAuthRoutes,
   resolveProviderAuthAgentScope,
 } from './provider-auth-routes.js';
+
+function makeRequest(method: string, url: string, body?: unknown) {
+  return {
+    method,
+    url,
+    async *[Symbol.asyncIterator]() {
+      if (body !== undefined) {
+        yield Buffer.from(JSON.stringify(body));
+      }
+    },
+  } as unknown as IncomingMessage;
+}
+
+function makeResponse() {
+  let payload: unknown;
+  const response = {
+    statusCode: 0,
+    setHeader: vi.fn(),
+    end: vi.fn((body?: string) => {
+      payload = body ? JSON.parse(body) : undefined;
+    }),
+  } as unknown as ServerResponse;
+  return { response, payload: () => payload };
+}
+
+function makeMonolithicRouteApi() {
+  const config = {
+    channels: {
+      tlon: {
+        deploymentMode: 'monolithic',
+        accounts: {
+          alpha: { ship: '~alpha' },
+          beta: { ship: '~beta' },
+        },
+      },
+    },
+    agents: {
+      list: [
+        { id: 'main' },
+        { id: 'tenant-alpha', agentDir: '/data/agents/tenant-alpha' },
+        { id: 'tenant-beta', agentDir: '/data/agents/tenant-beta' },
+      ],
+    },
+    bindings: [
+      {
+        agentId: 'tenant-alpha',
+        match: { channel: 'tlon', accountId: 'alpha' },
+      },
+      {
+        agentId: 'tenant-beta',
+        match: { channel: 'tlon', accountId: 'beta' },
+      },
+    ],
+  };
+  let handler:
+    | ((req: IncomingMessage, res: ServerResponse) => Promise<void> | void)
+    | undefined;
+  const api = {
+    logger: { info: vi.fn(), warn: vi.fn() },
+    registerHttpRoute: (route: { handler: typeof handler }) => {
+      handler = route.handler;
+    },
+    runtime: { config: { current: () => config } },
+  } as unknown as OpenClawPluginApi;
+  registerProviderAuthRoutes(api);
+  if (!handler) {
+    throw new Error('provider auth handler was not registered');
+  }
+  return handler;
+}
 
 describe('resolveProviderAuthAgentScope', () => {
   it('preserves default-agent behavior for standalone self-hosters', () => {
@@ -20,13 +93,24 @@ describe('resolveProviderAuthAgentScope', () => {
 
   it('requires an explicit configured agent in monolithic mode', () => {
     const config = {
-      channels: { tlon: { deploymentMode: 'monolithic' } },
+      channels: {
+        tlon: {
+          deploymentMode: 'monolithic',
+          accounts: { alpha: { ship: '~alpha' } },
+        },
+      },
       agents: {
         list: [
           { id: 'main' },
           { id: 'tenant-alpha', agentDir: '/data/agents/tenant-alpha' },
         ],
       },
+      bindings: [
+        {
+          agentId: 'tenant-alpha',
+          match: { channel: 'tlon', accountId: 'alpha' },
+        },
+      ],
     };
 
     expect(() => resolveProviderAuthAgentScope(config)).toThrow(
@@ -35,6 +119,7 @@ describe('resolveProviderAuthAgentScope', () => {
     expect(resolveProviderAuthAgentScope(config, 'tenant-alpha')).toMatchObject(
       {
         agentId: 'tenant-alpha',
+        accountId: 'alpha',
         agentDir: '/data/agents/tenant-alpha',
         isDefault: false,
       }
@@ -42,6 +127,70 @@ describe('resolveProviderAuthAgentScope', () => {
     expect(() => resolveProviderAuthAgentScope(config, 'missing')).toThrow(
       /not configured/
     );
+    expect(() => resolveProviderAuthAgentScope(config, 'main')).toThrow(
+      /exactly one Tlon account binding/
+    );
+  });
+});
+
+describe('monolithic provider-auth routes', () => {
+  it('reports health only for an exactly bound tenant agent', async () => {
+    const handler = makeMonolithicRouteApi();
+    const alpha = makeResponse();
+    await handler(
+      makeRequest('GET', '/tlon/provider-auth/health?agentId=tenant-alpha'),
+      alpha.response
+    );
+    expect(alpha.response.statusCode).toBe(200);
+    expect(alpha.payload()).toEqual({
+      running: true,
+      agentId: 'tenant-alpha',
+      accountId: 'alpha',
+    });
+
+    const unbound = makeResponse();
+    await handler(
+      makeRequest('GET', '/tlon/provider-auth/health?agentId=main'),
+      unbound.response
+    );
+    expect(unbound.response.statusCode).toBe(400);
+  });
+
+  it('does not expose one tenant provider flow to another tenant', async () => {
+    const handler = makeMonolithicRouteApi();
+    const started = makeResponse();
+    await handler(
+      makeRequest('POST', '/tlon/provider-auth/start', {
+        agentId: 'tenant-alpha',
+        provider: 'anthropic',
+      }),
+      started.response
+    );
+    expect(started.response.statusCode).toBe(202);
+    const flowId = (started.payload() as { flow: { id: string } }).flow.id;
+
+    const beta = makeResponse();
+    await handler(
+      makeRequest(
+        'GET',
+        `/tlon/provider-auth/flow?agentId=tenant-beta&flowId=${flowId}`
+      ),
+      beta.response
+    );
+    expect(beta.response.statusCode).toBe(404);
+
+    const alpha = makeResponse();
+    await handler(
+      makeRequest(
+        'GET',
+        `/tlon/provider-auth/flow?agentId=tenant-alpha&flowId=${flowId}`
+      ),
+      alpha.response
+    );
+    expect(alpha.response.statusCode).toBe(200);
+    expect(alpha.payload()).toMatchObject({
+      flow: { id: flowId, agentId: 'tenant-alpha' },
+    });
   });
 });
 

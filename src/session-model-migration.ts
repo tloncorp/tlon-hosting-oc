@@ -3,6 +3,7 @@ import {
   patchSessionEntry,
   type SessionEntry,
 } from 'openclaw/plugin-sdk/session-store-runtime';
+import { resolveAgentEffectiveModelPrimary } from 'openclaw/plugin-sdk/agent-runtime';
 import type {
   OpenClawPluginApi,
   OpenClawPluginServiceContext,
@@ -10,7 +11,6 @@ import type {
 
 import {
   BASIC_PROVIDER,
-  configuredPrimaryModel,
   HOSTED_DEFAULT_PROVIDER,
   normalizeModelRef,
   RETIRED_HOSTED_MODEL_REFS,
@@ -235,10 +235,13 @@ export async function migrateHostedSessionModels(params: {
     ...process.env,
     OPENCLAW_STATE_DIR: stateDir,
   };
-  const currentPrimaryModel = configuredPrimaryModel(config);
   let changedSessions = 0;
 
   for (const agentId of configuredAgentIds(config)) {
+    const currentPrimaryModel = resolveAgentEffectiveModelPrimary(
+      config,
+      agentId
+    );
     let sessions;
     try {
       sessions = sessionStore.listSessionEntries({ agentId, env });

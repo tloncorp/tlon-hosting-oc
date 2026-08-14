@@ -110,6 +110,7 @@ function publicFlow(flow: ProviderAuthFlow): PublicProviderAuthFlow {
 
 export type ProviderAuthAgentScope = {
   agentId: string;
+  accountId: string | null;
   agentDir: string;
   isDefault: boolean;
 };
@@ -141,8 +142,37 @@ export function resolveProviderAuthAgentScope(
   if (!listAgentIds(cfg).includes(agentId)) {
     throw new Error('agentId is not configured');
   }
+  let accountId: string | null = null;
+  if (isMonolithic(cfg)) {
+    const accountIds = new Set<string>();
+    for (const binding of cfg.bindings ?? []) {
+      if (
+        binding.type === 'acp' ||
+        binding.agentId.trim() !== agentId ||
+        binding.match.channel !== 'tlon' ||
+        !binding.match.accountId ||
+        binding.match.accountId === '*'
+      ) {
+        continue;
+      }
+      accountIds.add(binding.match.accountId.trim());
+    }
+    if (accountIds.size !== 1) {
+      throw new Error(
+        'agentId must have exactly one Tlon account binding in monolithic mode'
+      );
+    }
+    accountId = [...accountIds][0] ?? null;
+    const accounts = (
+      cfg.channels?.tlon as { accounts?: Record<string, unknown> } | undefined
+    )?.accounts;
+    if (!accountId || !Object.hasOwn(accounts ?? {}, accountId)) {
+      throw new Error('agentId Tlon account binding is not configured');
+    }
+  }
   return {
     agentId,
+    accountId,
     agentDir: explicit
       ? resolveAgentDir(cfg, agentId)
       : resolveDefaultAgentDir(cfg),
@@ -1044,6 +1074,20 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
       const suffix = url.pathname.slice(PROVIDER_AUTH_ROUTE.length);
 
       try {
+        if (req.method === 'GET' && suffix === '/health') {
+          const cfg = api.runtime.config.current() as OpenClawConfig;
+          const scope = resolveProviderAuthAgentScope(
+            cfg,
+            url.searchParams.get('agentId')
+          );
+          writeJson(res, 200, {
+            running: true,
+            agentId: scope.agentId,
+            accountId: scope.accountId,
+          });
+          return;
+        }
+
         if (req.method === 'GET' && suffix === '/status') {
           const cfg = api.runtime.config.current() as OpenClawConfig;
           const scope = resolveProviderAuthAgentScope(

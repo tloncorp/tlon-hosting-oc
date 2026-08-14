@@ -45,6 +45,75 @@ function createSessionStore(initial: Record<string, SessionEntry>) {
 }
 
 describe('session model migration', () => {
+  it('evaluates automatic overrides against each agent model', async () => {
+    const entriesByAgent: Record<string, Record<string, SessionEntry>> = {
+      alpha: {
+        session: {
+          sessionId: 'alpha-session',
+          updatedAt: 1,
+          providerOverride: 'openai',
+          modelOverride: 'gpt-5.6-luna',
+          modelOverrideSource: 'auto',
+          modelOverrideFallbackOriginProvider: 'openai',
+          modelOverrideFallbackOriginModel: 'gpt-5.6-luna',
+        },
+      },
+      beta: {
+        session: {
+          sessionId: 'beta-session',
+          updatedAt: 1,
+          providerOverride: 'openai',
+          modelOverride: 'gpt-5.6-luna',
+          modelOverrideSource: 'auto',
+          modelOverrideFallbackOriginProvider: 'openai',
+          modelOverrideFallbackOriginModel: 'gpt-5.6-luna',
+        },
+      },
+    };
+    const runtime = {
+      listSessionEntries: ({ agentId }: { agentId: string }) =>
+        Object.entries(entriesByAgent[agentId] ?? {}).map(
+          ([sessionKey, entry]) => ({ sessionKey, entry })
+        ),
+      patchSessionEntry: async (params: {
+        agentId: string;
+        sessionKey: string;
+        update: (entry: SessionEntry) => Partial<SessionEntry> | null;
+      }) => {
+        const entry = entriesByAgent[params.agentId]?.[params.sessionKey];
+        if (!entry) return null;
+        const next = params.update(structuredClone(entry));
+        if (next) {
+          entriesByAgent[params.agentId][params.sessionKey] =
+            next as SessionEntry;
+        }
+        return next;
+      },
+    };
+
+    const result = await migrateHostedSessionModels({
+      stateDir: '/unused-in-memory-state',
+      config: {
+        agents: {
+          defaults: { model: 'openai/gpt-5.6-luna' },
+          list: [
+            { id: 'alpha' },
+            { id: 'beta', model: 'anthropic/claude-sonnet-5' },
+          ],
+        },
+      },
+      logger: { info: vi.fn(), warn: vi.fn() },
+      sessionStore: runtime as never,
+    });
+
+    expect(result.changedSessions).toBe(1);
+    expect(entriesByAgent.alpha.session).toHaveProperty(
+      'modelOverride',
+      'gpt-5.6-luna'
+    );
+    expect(entriesByAgent.beta.session).not.toHaveProperty('modelOverride');
+  });
+
   it('clears retired session pins without disturbing session identity or premium models', async () => {
     const store = createSessionStore({
       openrouter: {

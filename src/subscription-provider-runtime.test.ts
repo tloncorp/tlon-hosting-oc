@@ -65,6 +65,27 @@ describe('registerSubscriptionProviderRuntimes', () => {
     expect(resolveProviders).not.toHaveBeenCalled();
   });
 
+  it('does not use a tenant workspace to discover gateway-global providers', () => {
+    const api = makeApi({
+      agents: { defaults: { workspace: '/data/workspaces/tenant-alpha' } },
+      channels: {
+        tlon: {
+          deploymentMode: 'monolithic',
+          accounts: {},
+        },
+      },
+      plugins: { allow: ['tlon'] },
+    });
+    const resolveProviders = vi.fn((_options: unknown) => []);
+
+    registerSubscriptionProviderRuntimes(api, resolveProviders as never);
+
+    expect(resolveProviders).toHaveBeenCalledOnce();
+    expect(resolveProviders.mock.calls[0]?.[0]).not.toHaveProperty(
+      'workspaceDir'
+    );
+  });
+
   it('does not override an explicitly disabled provider', () => {
     const api = makeApi({
       plugins: {
