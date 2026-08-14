@@ -451,7 +451,14 @@ export function parseDeviceCodeVerificationMessage(
     provider === 'openai'
       ? url.hostname === 'auth.openai.com' && url.pathname === '/codex/device'
       : url.hostname === 'accounts.x.ai' && url.pathname === '/oauth2/device';
-  if (url.protocol !== 'https:' || !trustedUrl) {
+  const urlUserCode = url.searchParams.get('user_code');
+  if (
+    url.protocol !== 'https:' ||
+    !trustedUrl ||
+    (provider === 'xai' &&
+      urlUserCode !== null &&
+      urlUserCode !== codeMatch[1])
+  ) {
     return null;
   }
   return {

@@ -300,6 +300,7 @@ describe('parseDeviceCodeVerificationMessage', () => {
     'URL: https://accounts.x.ai.evil.example/oauth2/device\nCode: ABCD-1234',
     'URL: https://auth.x.ai/oauth2/device\nCode: ABCD-1234',
     'URL: https://accounts.x.ai/oauth2/other\nCode: ABCD-1234',
+    'URL: https://accounts.x.ai/oauth2/device?user_code=WXYZ-9999\nCode: ABCD-1234',
     'URL: https://accounts.x.ai/oauth2/device',
   ])('rejects an invalid or incomplete xAI handoff: %s', (message) => {
     expect(parseDeviceCodeVerificationMessage('xai', message)).toBeNull();
