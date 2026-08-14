@@ -1,9 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   extractOpenAICodexModels,
   extractSubscriptionModels,
+  extractXaiOAuthModels,
+  fetchXaiOAuthSubscriptionModels,
   isManagedConfigLockPermissionError,
+  parseDeviceCodeVerificationMessage,
   parseOpenAIVerificationMessage,
 } from './provider-auth-routes.js';
 
@@ -47,6 +50,13 @@ describe('extractSubscriptionModels', () => {
             api: 'anthropic-messages',
             available: false,
           },
+          {
+            provider: 'xai',
+            id: 'grok-account-model',
+            name: 'Grok Account Model',
+            api: 'openai-responses',
+            available: true,
+          },
         ],
       })
     ).toEqual({
@@ -55,6 +65,7 @@ describe('extractSubscriptionModels', () => {
         { id: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
         { id: 'claude-opus-4-8', name: 'Claude Opus 4.8' },
       ],
+      xai: [{ id: 'grok-account-model', name: 'Grok Account Model' }],
     });
   });
 
@@ -76,11 +87,16 @@ describe('extractSubscriptionModels', () => {
             key: 'anthropic/claude-sonnet-5',
             name: 'Claude Sonnet 5',
           },
+          {
+            key: 'xai/grok-account-model',
+            name: 'Grok Account Model',
+          },
         ],
       })
     ).toEqual({
       openai: [{ id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' }],
       anthropic: [{ id: 'claude-sonnet-5', name: 'Claude Sonnet 5' }],
+      xai: [{ id: 'grok-account-model', name: 'Grok Account Model' }],
     });
   });
 
@@ -108,6 +124,61 @@ describe('extractSubscriptionModels', () => {
     ).toEqual({
       openai: [{ id: 'gpt-5.6-luna' }],
       anthropic: [],
+      xai: [],
+    });
+  });
+});
+
+describe('extractXaiOAuthModels', () => {
+  it('returns chat-capable models from xAI OAuth discovery', () => {
+    expect(
+      extractXaiOAuthModels([
+        {
+          id: 'grok-account-model',
+          name: 'Grok Account Model',
+          api_backend: 'responses',
+        },
+        { model: 'grok-code-fast-1', backend: 'chat' },
+        { id: 'grok-imagine-image' },
+        { id: 'grok-4.20-multi-agent', backend: 'language' },
+        { id: 'grok-voice', backend: 'audio' },
+      ])
+    ).toEqual([
+      { id: 'grok-account-model', name: 'Grok Account Model' },
+      { id: 'grok-code-fast-1' },
+    ]);
+  });
+
+  it('accepts the OpenAI-compatible data envelope and deduplicates ids', () => {
+    expect(
+      extractXaiOAuthModels({
+        data: [
+          { id: 'grok-account-model', object: 'model' },
+          { id: 'grok-account-model', name: 'Duplicate' },
+          null,
+        ],
+      })
+    ).toEqual([{ id: 'grok-account-model' }]);
+  });
+});
+
+describe('fetchXaiOAuthSubscriptionModels', () => {
+  it('loads the account model list directly with the OAuth access token', async () => {
+    const loadRows = vi.fn(async () => [
+      { id: 'grok-account-model', name: 'Grok Account Model' },
+    ]);
+
+    await expect(
+      fetchXaiOAuthSubscriptionModels('oauth-access-token', loadRows as never)
+    ).resolves.toEqual([
+      { id: 'grok-account-model', name: 'Grok Account Model' },
+    ]);
+    expect(loadRows).toHaveBeenCalledWith({
+      providerId: 'xai',
+      endpoint: 'https://cli-chat-proxy.grok.com/v1/models',
+      discoveryApiKey: 'oauth-access-token',
+      timeoutMs: 10_000,
+      auditContext: 'tlon-xai-oauth-model-discovery',
     });
   });
 });
@@ -203,5 +274,35 @@ describe('parseOpenAIVerificationMessage', () => {
     'URL: https://auth.openai.com/codex/device',
   ])('rejects an invalid or incomplete handoff: %s', (message) => {
     expect(parseOpenAIVerificationMessage(message)).toBeNull();
+  });
+});
+
+describe('parseDeviceCodeVerificationMessage', () => {
+  it('extracts the xAI device URL and one-time code', () => {
+    expect(
+      parseDeviceCodeVerificationMessage(
+        'xai',
+        [
+          'Open this URL in your LOCAL browser and enter the code below.',
+          'URL: https://accounts.x.ai/oauth2/device?user_code=ABCD-1234',
+          'Code: ABCD-1234',
+        ].join('\n')
+      )
+    ).toEqual({
+      verificationUrl:
+        'https://accounts.x.ai/oauth2/device?user_code=ABCD-1234',
+      userCode: 'ABCD-1234',
+    });
+  });
+
+  it.each([
+    'URL: http://accounts.x.ai/oauth2/device\nCode: ABCD-1234',
+    'URL: https://accounts.x.ai.evil.example/oauth2/device\nCode: ABCD-1234',
+    'URL: https://auth.x.ai/oauth2/device\nCode: ABCD-1234',
+    'URL: https://accounts.x.ai/oauth2/other\nCode: ABCD-1234',
+    'URL: https://accounts.x.ai/oauth2/device?user_code=WXYZ-9999\nCode: ABCD-1234',
+    'URL: https://accounts.x.ai/oauth2/device',
+  ])('rejects an invalid or incomplete xAI handoff: %s', (message) => {
+    expect(parseDeviceCodeVerificationMessage('xai', message)).toBeNull();
   });
 });

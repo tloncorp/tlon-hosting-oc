@@ -10,6 +10,7 @@ import {
 } from 'openclaw/plugin-sdk/agent-runtime';
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
+import { fetchLiveProviderModelRows } from 'openclaw/plugin-sdk/provider-catalog-live-runtime';
 import {
   removeProviderAuthProfilesWithLock,
   upsertAuthProfileWithLock,
@@ -29,8 +30,12 @@ const ANTHROPIC_PROFILE_ID = 'anthropic:default';
 const OPENAI_CODEX_MODELS_URL =
   'https://chatgpt.com/backend-api/codex/models?client_version=1.0.0';
 const OPENAI_CODEX_MODELS_TIMEOUT_MS = 10_000;
+const XAI_GROK_OAUTH_MODELS_URL =
+  'https://cli-chat-proxy.grok.com/v1/models';
+const XAI_GROK_OAUTH_MODELS_TIMEOUT_MS = 10_000;
 
-type ProviderId = 'openai' | 'anthropic';
+type ProviderId = 'openai' | 'anthropic' | 'xai';
+type DeviceCodeProviderId = Exclude<ProviderId, 'anthropic'>;
 type FlowStatus =
   | 'awaiting_browser'
   | 'awaiting_token'
@@ -72,6 +77,13 @@ type SubscriptionModel = {
 type SubscriptionModelCatalog = Partial<
   Record<ProviderId, SubscriptionModel[]>
 >;
+type LiveProviderModelRowsLoader = typeof fetchLiveProviderModelRows;
+
+type OAuthSubscriptionModelAdapter = {
+  providerId: DeviceCodeProviderId;
+  displayName: string;
+  discoverModels: (accessToken: string) => Promise<SubscriptionModel[]>;
+};
 
 function writeJson(res: ServerResponse, statusCode: number, payload: unknown) {
   res.statusCode = statusCode;
@@ -93,7 +105,9 @@ function publicFlow(flow: ProviderAuthFlow): PublicProviderAuthFlow {
 }
 
 function normalizeProvider(value: unknown): ProviderId | null {
-  return value === 'openai' || value === 'anthropic' ? value : null;
+  return value === 'openai' || value === 'anthropic' || value === 'xai'
+    ? value
+    : null;
 }
 
 function pruneFlows(now = Date.now()) {
@@ -250,7 +264,7 @@ export function extractSubscriptionModels(
     .map(normalizeCatalogEntry)
     .filter((entry) => entry !== null);
 
-  for (const provider of ['openai', 'anthropic'] as const) {
+  for (const provider of ['openai', 'anthropic', 'xai'] as const) {
     const seen = new Set<string>();
     catalog[provider] = entries
       .filter((entry) => {
@@ -332,6 +346,72 @@ export function extractOpenAICodexModels(value: unknown): SubscriptionModel[] {
   });
 }
 
+export function extractXaiOAuthModels(value: unknown): SubscriptionModel[] {
+  const rows = Array.isArray(value)
+    ? value
+    : value &&
+        typeof value === 'object' &&
+        Array.isArray((value as { data?: unknown }).data)
+      ? (value as { data: unknown[] }).data
+      : [];
+  const seen = new Set<string>();
+
+  return rows.flatMap((row) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      return [];
+    }
+    const model = row as Record<string, unknown>;
+    const rawId =
+      typeof model.id === 'string'
+        ? model.id
+        : typeof model.model === 'string'
+          ? model.model
+          : '';
+    const id = rawId.trim();
+    if (
+      !id ||
+      seen.has(id) ||
+      id.includes('multi-agent') ||
+      id === 'grok-imagine-image' ||
+      id === 'grok-imagine-image-quality'
+    ) {
+      return [];
+    }
+
+    const rawBackend =
+      typeof model.api_backend === 'string'
+        ? model.api_backend
+        : typeof model.apiBackend === 'string'
+          ? model.apiBackend
+          : typeof model.backend === 'string'
+            ? model.backend
+            : '';
+    const backend = rawBackend.trim().toLowerCase();
+    if (backend && !['responses', 'chat', 'language'].includes(backend)) {
+      return [];
+    }
+
+    seen.add(id);
+    const rawName = typeof model.name === 'string' ? model.name : '';
+    const name = rawName.trim();
+    return [{ id, ...(name ? { name } : {}) }];
+  });
+}
+
+export async function fetchXaiOAuthSubscriptionModels(
+  discoveryApiKey: string,
+  loadRows: LiveProviderModelRowsLoader = fetchLiveProviderModelRows
+): Promise<SubscriptionModel[]> {
+  const rows = await loadRows({
+    providerId: 'xai',
+    endpoint: XAI_GROK_OAUTH_MODELS_URL,
+    discoveryApiKey,
+    timeoutMs: XAI_GROK_OAUTH_MODELS_TIMEOUT_MS,
+    auditContext: 'tlon-xai-oauth-model-discovery',
+  });
+  return extractXaiOAuthModels(rows);
+}
+
 function errorMessage(error: unknown, secret?: string): string {
   const raw = error instanceof Error ? error.message : String(error);
   return secret ? raw.split(secret).join('[redacted]') : raw;
@@ -348,6 +428,13 @@ export function isManagedConfigLockPermissionError(error: unknown): boolean {
 export function parseOpenAIVerificationMessage(
   message: string
 ): { verificationUrl: string; userCode: string } | null {
+  return parseDeviceCodeVerificationMessage('openai', message);
+}
+
+export function parseDeviceCodeVerificationMessage(
+  provider: DeviceCodeProviderId,
+  message: string
+): { verificationUrl: string; userCode: string } | null {
   const urlMatch = /^URL:\s*(\S+)\s*$/im.exec(message);
   const codeMatch = /^Code:\s*(\S+)\s*$/im.exec(message);
   if (!urlMatch?.[1] || !codeMatch?.[1]) {
@@ -360,10 +447,17 @@ export function parseOpenAIVerificationMessage(
   } catch {
     return null;
   }
+  const trustedUrl =
+    provider === 'openai'
+      ? url.hostname === 'auth.openai.com' && url.pathname === '/codex/device'
+      : url.hostname === 'accounts.x.ai' && url.pathname === '/oauth2/device';
+  const urlUserCode = url.searchParams.get('user_code');
   if (
     url.protocol !== 'https:' ||
-    url.hostname !== 'auth.openai.com' ||
-    url.pathname !== '/codex/device'
+    !trustedUrl ||
+    (provider === 'xai' &&
+      urlUserCode !== null &&
+      urlUserCode !== codeMatch[1])
   ) {
     return null;
   }
@@ -424,16 +518,23 @@ function createPrompter(params: {
   };
 }
 
-async function runOpenAIFlow(api: OpenClawPluginApi, flowId: string) {
+async function runDeviceCodeFlow(
+  api: OpenClawPluginApi,
+  flowId: string,
+  provider: DeviceCodeProviderId
+) {
   try {
     await runModelsAuthLoginFlow({
-      provider: 'openai',
+      provider,
       method: 'device-code',
       agent: 'main',
       runtime: createRuntime(api),
       prompter: createPrompter({
         onNote: (message) => {
-          const verification = parseOpenAIVerificationMessage(message);
+          const verification = parseDeviceCodeVerificationMessage(
+            provider,
+            message
+          );
           if (verification) {
             updateFlow(flowId, {
               ...verification,
@@ -445,6 +546,7 @@ async function runOpenAIFlow(api: OpenClawPluginApi, flowId: string) {
       isRemote: true,
       openUrl: async () => {},
     });
+    await refreshGatewayAuthState(api);
     updateFlow(flowId, { status: 'complete' });
   } catch (error) {
     // OpenClaw 7.1 persists the auth profile before applying the provider's
@@ -453,8 +555,9 @@ async function runOpenAIFlow(api: OpenClawPluginApi, flowId: string) {
     // The credential is already durable in the pier-backed auth store.
     if (isManagedConfigLockPermissionError(error)) {
       api.logger.info(
-        '[tlon-hosting] OpenAI auth saved; skipped optional root-managed config patch'
+        `[tlon-hosting] ${provider} auth saved; skipped optional root-managed config patch`
       );
+      await refreshGatewayAuthState(api);
       updateFlow(flowId, { status: 'complete' });
       return;
     }
@@ -506,7 +609,7 @@ async function runAnthropicFlow(
   }
 }
 
-async function refreshExpiredOpenAIProfiles(api: OpenClawPluginApi) {
+async function refreshExpiredOAuthProfiles(api: OpenClawPluginApi) {
   const cfg = api.runtime.config.current() as OpenClawConfig;
   const agentDir = resolveDefaultAgentDir(cfg);
   const store = ensureAuthProfileStore(agentDir, {
@@ -514,35 +617,43 @@ async function refreshExpiredOpenAIProfiles(api: OpenClawPluginApi) {
     config: cfg,
   });
 
-  for (const profileId of listProfilesForProvider(store, 'openai')) {
-    const credential = store.profiles[profileId];
-    if (
-      credential?.type !== 'oauth' ||
-      !credential.expires ||
-      credential.expires > Date.now() + 60_000
-    ) {
-      continue;
-    }
-    try {
-      await resolveApiKeyForProfile({
-        cfg,
-        store,
-        profileId,
-        agentDir,
-        forceRefresh: true,
-      });
-    } catch {
-      api.logger.warn(
-        `[tlon-hosting] OpenAI auth refresh failed for ${profileId}; re-login may be required`
-      );
+  for (const provider of ['openai', 'xai'] as const) {
+    for (const profileId of listProfilesForProvider(store, provider)) {
+      const credential = store.profiles[profileId];
+      if (
+        credential?.type !== 'oauth' ||
+        !credential.expires ||
+        credential.expires > Date.now() + 60_000
+      ) {
+        continue;
+      }
+      try {
+        await resolveApiKeyForProfile({
+          cfg,
+          store,
+          profileId,
+          agentDir,
+          forceRefresh: true,
+        });
+      } catch {
+        api.logger.warn(
+          `[tlon-hosting] ${provider} auth refresh failed for ${profileId}; re-login may be required`
+        );
+      }
     }
   }
 }
 
-async function refreshGatewayAuthState(api: OpenClawPluginApi) {
+async function requestFreshGatewayAuthState(api: OpenClawPluginApi) {
   clearRuntimeAuthProfileStoreSnapshots();
+  return await api.runtime.gateway.request('models.authStatus', {
+    refresh: true,
+  });
+}
+
+async function refreshGatewayAuthState(api: OpenClawPluginApi) {
   try {
-    await api.runtime.gateway.request('models.authStatus', { refresh: true });
+    await requestFreshGatewayAuthState(api);
   } catch (error) {
     api.logger.warn(
       `[tlon-hosting] Provider auth state refresh failed: ${errorMessage(error)}`
@@ -615,11 +726,77 @@ async function loadOpenAISubscriptionModels(
   return models;
 }
 
+async function loadOAuthSubscriptionModels(
+  api: OpenClawPluginApi,
+  adapter: OAuthSubscriptionModelAdapter
+): Promise<SubscriptionModel[]> {
+  const cfg = api.runtime.config.current() as OpenClawConfig;
+  const agentDir = resolveDefaultAgentDir(cfg);
+  const store = ensureAuthProfileStore(agentDir, {
+    allowKeychainPrompt: false,
+    config: cfg,
+  });
+  const models: SubscriptionModel[] = [];
+  const seen = new Set<string>();
+  let hasOAuthProfile = false;
+
+  for (const profileId of listProfilesForProvider(store, adapter.providerId)) {
+    const credential = store.profiles[profileId];
+    if (credential?.type !== 'oauth') {
+      continue;
+    }
+    hasOAuthProfile = true;
+    try {
+      const resolved = await resolveApiKeyForProfile({
+        cfg,
+        store,
+        profileId,
+        agentDir,
+      });
+      if (!resolved?.apiKey || resolved.profileType !== 'oauth') {
+        continue;
+      }
+      const discovered = await adapter.discoverModels(resolved.apiKey);
+      if (discovered.length > 0) {
+        api.logger.info(
+          `[tlon-hosting] ${adapter.displayName} OAuth model discovery returned ${discovered.length} model(s) for ${profileId}`
+        );
+      }
+      for (const model of discovered) {
+        if (!seen.has(model.id)) {
+          seen.add(model.id);
+          models.push(model);
+        }
+      }
+    } catch (error) {
+      api.logger.warn(
+        `[tlon-hosting] ${adapter.displayName} OAuth model discovery failed for ${profileId}: ${errorMessage(
+          error
+        )}`
+      );
+    }
+  }
+
+  if (models.length === 0 && hasOAuthProfile) {
+    api.logger.warn(
+      `[tlon-hosting] ${adapter.displayName} OAuth is connected but exposed no selectable models`
+    );
+  }
+  return models;
+}
+
+const xaiOAuthModelAdapter: OAuthSubscriptionModelAdapter = {
+  providerId: 'xai',
+  displayName: 'xAI',
+  discoverModels: fetchXaiOAuthSubscriptionModels,
+};
+
 async function loadSubscriptionModelCatalog(
   api: OpenClawPluginApi
 ): Promise<SubscriptionModelCatalog> {
-  const [openai, gatewayResult] = await Promise.all([
+  const [openai, xai, gatewayResult] = await Promise.all([
     loadOpenAISubscriptionModels(api),
+    loadOAuthSubscriptionModels(api, xaiOAuthModelAdapter),
     api.runtime.gateway
       .request('models.list', { view: 'all' })
       .catch((error: unknown) => {
@@ -635,6 +812,7 @@ async function loadSubscriptionModelCatalog(
   return {
     openai,
     anthropic: gatewayCatalog.anthropic ?? [],
+    xai,
   };
 }
 
@@ -673,7 +851,7 @@ function includeDetectedAuthFailures(
         ? (provider.profiles as Array<Record<string, unknown>>)
         : [];
       const hasSubscriptionProfile = profiles.some((profile) => {
-        if (providerId === 'openai') {
+        if (providerId === 'openai' || providerId === 'xai') {
           return profile.type === 'oauth';
         }
         if (providerId === 'anthropic') {
@@ -682,7 +860,9 @@ function includeDetectedAuthFailures(
         return true;
       });
       const subscriptionStatus =
-        (providerId === 'openai' || providerId === 'anthropic') &&
+        (providerId === 'openai' ||
+          providerId === 'anthropic' ||
+          providerId === 'xai') &&
         !hasSubscriptionProfile
           ? { ...provider, status: 'missing', expiry: undefined }
           : provider;
@@ -716,7 +896,7 @@ function createFlow(provider: ProviderId): ProviderAuthFlow {
   const flow: ProviderAuthFlow = {
     id: randomUUID(),
     provider,
-    status: provider === 'openai' ? 'awaiting_browser' : 'awaiting_token',
+    status: provider === 'anthropic' ? 'awaiting_token' : 'awaiting_browser',
     createdAt: now,
     expiresAt: now + FLOW_TTL_MS,
   };
@@ -737,13 +917,11 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
 
       try {
         if (req.method === 'GET' && suffix === '/status') {
-          await refreshExpiredOpenAIProfiles(api);
-          const [result, subscriptionModels] = await Promise.all([
-            api.runtime.gateway.request('models.authStatus', {
-              refresh: true,
-            }),
-            loadSubscriptionModelCatalog(api),
-          ]);
+          await refreshExpiredOAuthProfiles(api);
+          // Refresh auth first so auth-dependent provider catalogs (notably
+          // xAI OAuth) cannot race model discovery with stale credentials.
+          const result = await requestFreshGatewayAuthState(api);
+          const subscriptionModels = await loadSubscriptionModelCatalog(api);
           const status = includeDetectedAuthFailures(api, result);
           writeJson(res, 200, {
             ...(status && typeof status === 'object' ? status : {}),
@@ -757,14 +935,14 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
           const provider = normalizeProvider(body.provider);
           if (!provider) {
             writeJson(res, 400, {
-              error: 'provider must be openai or anthropic',
+              error: 'provider must be openai, anthropic, or xai',
             });
             return;
           }
 
           const flow = createFlow(provider);
-          if (provider === 'openai') {
-            void runOpenAIFlow(api, flow.id);
+          if (provider !== 'anthropic') {
+            void runDeviceCodeFlow(api, flow.id, provider);
             if (!flow.verificationUrl && flow.status === 'awaiting_browser') {
               await waitForFlowUpdate(flow.id);
             }
@@ -817,7 +995,7 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
           const provider = normalizeProvider(url.searchParams.get('provider'));
           if (!provider) {
             writeJson(res, 400, {
-              error: 'provider must be openai or anthropic',
+              error: 'provider must be openai, anthropic, or xai',
             });
             return;
           }
