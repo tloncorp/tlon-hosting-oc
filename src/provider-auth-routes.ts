@@ -133,7 +133,11 @@ export type ManagedProviderApiKey = {
 export function normalizeManagedProviderApiKeys(
   providerKeys: unknown
 ): ManagedProviderApiKey[] {
-  if (!providerKeys || typeof providerKeys !== 'object' || Array.isArray(providerKeys)) {
+  if (
+    !providerKeys ||
+    typeof providerKeys !== 'object' ||
+    Array.isArray(providerKeys)
+  ) {
     throw new Error('providerKeys must be an object');
   }
   const keys = providerKeys as Record<string, unknown>;

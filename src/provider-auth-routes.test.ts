@@ -193,6 +193,34 @@ describe('monolithic provider-auth routes', () => {
       flow: { id: flowId, agentId: 'tenant-alpha' },
     });
   });
+
+  it('accepts an operator sync only for an exactly bound tenant agent', async () => {
+    const handler = makeMonolithicRouteApi();
+    const alpha = makeResponse();
+    await handler(
+      makeRequest('POST', '/tlon/provider-auth/sync', {
+        agentId: 'tenant-alpha',
+        providerKeys: {},
+      }),
+      alpha.response
+    );
+    expect(alpha.response.statusCode).toBe(200);
+    expect(alpha.payload()).toEqual({
+      agentId: 'tenant-alpha',
+      accountId: 'alpha',
+      profiles: [],
+    });
+
+    const unbound = makeResponse();
+    await handler(
+      makeRequest('POST', '/tlon/provider-auth/sync', {
+        agentId: 'main',
+        providerKeys: {},
+      }),
+      unbound.response
+    );
+    expect(unbound.response.statusCode).toBe(400);
+  });
 });
 
 describe('normalizeManagedProviderApiKeys', () => {
