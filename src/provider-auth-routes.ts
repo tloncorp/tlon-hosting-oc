@@ -1161,6 +1161,8 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
       pruneFlows();
       const url = new URL(req.url ?? PROVIDER_AUTH_ROUTE, 'http://localhost');
       const suffix = url.pathname.slice(PROVIDER_AUTH_ROUTE.length);
+      const requestedAgentId = url.searchParams.get('agentId')?.trim() || 'default';
+      let requestedProvider: ProviderId | undefined;
 
       try {
         if (req.method === 'GET' && suffix === '/health') {
@@ -1240,6 +1242,10 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
             });
             return;
           }
+          requestedProvider = provider;
+          api.logger.info(
+            `[tlon-hosting] Provider auth start: agent=${scope.agentId} provider=${provider}`
+          );
 
           const flow = createFlow(provider, scope.agentId);
           if (provider !== 'anthropic') {
@@ -1338,6 +1344,9 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
         writeJson(res, 404, { error: 'not found' });
       } catch (error) {
         const message = errorMessage(error);
+        api.logger.warn(
+          `[tlon-hosting] Provider auth request failed: route=${suffix || '/'} agent=${requestedAgentId}${requestedProvider ? ` provider=${requestedProvider}` : ''} error=${message}`
+        );
         const statusCode =
           message.includes('JSON') ||
           message.includes('request body') ||
