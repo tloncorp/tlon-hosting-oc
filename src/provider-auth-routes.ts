@@ -30,6 +30,15 @@ const FLOW_TTL_MS = 15 * 60_000;
 const START_WAIT_MS = 15_000;
 const MAX_BODY_BYTES = 16 * 1024;
 const ANTHROPIC_PROFILE_ID = 'anthropic:default';
+const DEFAULT_API_KEY_PROVIDER = 'openrouter';
+const NON_LLM_API_KEY_PROVIDERS = new Set(['brave']);
+const PLACEHOLDER_API_KEYS = new Set([
+  'none',
+  'null',
+  'undefined',
+  'not-set',
+  'not_set',
+]);
 const OPENAI_CODEX_MODELS_URL =
   'https://chatgpt.com/backend-api/codex/models?client_version=1.0.0';
 const OPENAI_CODEX_MODELS_TIMEOUT_MS = 10_000;
@@ -114,6 +123,53 @@ export type ProviderAuthAgentScope = {
   agentDir: string;
   isDefault: boolean;
 };
+
+export type ManagedProviderApiKey = {
+  profileId: string;
+  provider: string;
+  key: string;
+};
+
+export function normalizeManagedProviderApiKeys(
+  providerKeys: unknown
+): ManagedProviderApiKey[] {
+  if (!providerKeys || typeof providerKeys !== 'object' || Array.isArray(providerKeys)) {
+    throw new Error('providerKeys must be an object');
+  }
+  const keys = providerKeys as Record<string, unknown>;
+  const managed: ManagedProviderApiKey[] = [];
+  const add = (profileName: string, provider: string, value: unknown) => {
+    const key = typeof value === 'string' ? value.trim() : '';
+    if (!key || PLACEHOLDER_API_KEYS.has(key.toLowerCase())) {
+      return;
+    }
+    managed.push({ profileId: `${profileName}:default`, provider, key });
+  };
+
+  const basic = keys.basic;
+  const openrouter = keys[DEFAULT_API_KEY_PROVIDER];
+  if (typeof basic === 'string' && basic.trim()) {
+    add('basic', DEFAULT_API_KEY_PROVIDER, basic);
+  } else {
+    add(DEFAULT_API_KEY_PROVIDER, DEFAULT_API_KEY_PROVIDER, openrouter);
+  }
+
+  for (const [rawProvider, value] of Object.entries(keys).sort(([a], [b]) =>
+    a.localeCompare(b)
+  )) {
+    const provider = rawProvider.trim().toLowerCase();
+    if (
+      !provider ||
+      provider === 'basic' ||
+      provider === DEFAULT_API_KEY_PROVIDER ||
+      NON_LLM_API_KEY_PROVIDERS.has(provider)
+    ) {
+      continue;
+    }
+    add(provider, provider, value);
+  }
+  return managed;
+}
 
 function isMonolithic(cfg: OpenClawConfig): boolean {
   return (
@@ -817,6 +873,35 @@ async function refreshGatewayAuthState(
   }
 }
 
+async function syncManagedProviderApiKeys(
+  api: OpenClawPluginApi,
+  scope: ProviderAuthAgentScope,
+  providerKeys: unknown
+): Promise<ManagedProviderApiKey[]> {
+  const managed = normalizeManagedProviderApiKeys(providerKeys);
+  for (const entry of managed) {
+    const store = await upsertAuthProfileWithLock({
+      profileId: entry.profileId,
+      credential: {
+        type: 'api_key',
+        provider: entry.provider,
+        key: entry.key,
+      },
+      agentDir: scope.agentDir,
+    });
+    if (!store) {
+      throw new Error(`failed to update provider auth for ${entry.provider}`);
+    }
+    await clearAuthProfileCooldown({
+      store,
+      profileId: entry.profileId,
+      agentDir: scope.agentDir,
+    });
+  }
+  await refreshGatewayAuthState(api, scope.agentId);
+  return managed;
+}
+
 async function loadOpenAISubscriptionModels(
   api: OpenClawPluginApi,
   agentDir: string
@@ -1110,6 +1195,32 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
           writeJson(res, 200, {
             ...(status && typeof status === 'object' ? status : {}),
             subscriptionModels,
+          });
+          return;
+        }
+
+        if (req.method === 'POST' && suffix === '/sync') {
+          const body = asRecord(await readJsonBody(req));
+          const cfg = api.runtime.config.current() as OpenClawConfig;
+          const scope = resolveProviderAuthAgentScope(cfg, body.agentId);
+          if (!isMonolithic(cfg)) {
+            writeJson(res, 400, {
+              error: 'provider auth sync is only available in monolithic mode',
+            });
+            return;
+          }
+          const managed = await syncManagedProviderApiKeys(
+            api,
+            scope,
+            body.providerKeys
+          );
+          writeJson(res, 200, {
+            agentId: scope.agentId,
+            accountId: scope.accountId,
+            profiles: managed.map(({ profileId, provider }) => ({
+              profileId,
+              provider,
+            })),
           });
           return;
         }

@@ -10,6 +10,7 @@ import {
   isManagedConfigLockPermissionError,
   parseDeviceCodeVerificationMessage,
   parseOpenAIVerificationMessage,
+  normalizeManagedProviderApiKeys,
   registerProviderAuthRoutes,
   resolveProviderAuthAgentScope,
 } from './provider-auth-routes.js';
@@ -191,6 +192,35 @@ describe('monolithic provider-auth routes', () => {
     expect(alpha.payload()).toMatchObject({
       flow: { id: flowId, agentId: 'tenant-alpha' },
     });
+  });
+});
+
+describe('normalizeManagedProviderApiKeys', () => {
+  it('maps the hosted basic key to OpenRouter and ignores non-LLM keys', () => {
+    expect(
+      normalizeManagedProviderApiKeys({
+        basic: 'tenant-key',
+        brave: 'search-key',
+        anthropic: 'anthropic-key',
+      })
+    ).toEqual([
+      {
+        profileId: 'basic:default',
+        provider: 'openrouter',
+        key: 'tenant-key',
+      },
+      {
+        profileId: 'anthropic:default',
+        provider: 'anthropic',
+        key: 'anthropic-key',
+      },
+    ]);
+  });
+
+  it('does not return empty or placeholder credentials', () => {
+    expect(
+      normalizeManagedProviderApiKeys({ basic: 'not-set', openai: '  ' })
+    ).toEqual([]);
   });
 });
 
