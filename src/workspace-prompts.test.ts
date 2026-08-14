@@ -7,6 +7,7 @@ import { create } from 'tar';
 
 import {
   registerWorkspacePromptSync,
+  resolveWorkspacePromptTargets,
   syncWorkspacePrompts,
   upsertPromptFiles,
 } from './workspace-prompts.js';
@@ -23,13 +24,93 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   await Promise.all(
-    temporaryRoots.splice(0).map((root) =>
-      rm(root, { recursive: true, force: true })
-    )
+    temporaryRoots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true }))
   );
 });
 
 describe('workspace prompt sync', () => {
+  it('resolves one account-scoped workspace per exact monolithic binding', () => {
+    const config = {
+      channels: {
+        tlon: {
+          deploymentMode: 'monolithic',
+          accounts: { alpha: { ship: '~alpha' }, beta: { ship: '~beta' } },
+        },
+      },
+      agents: {
+        list: [
+          { id: 'main', workspace: '/data/main' },
+          { id: 'tenant-alpha', workspace: '/data/alpha' },
+          { id: 'tenant-beta', workspace: '/data/beta' },
+        ],
+      },
+      bindings: [
+        {
+          agentId: 'tenant-alpha',
+          match: { channel: 'tlon', accountId: 'alpha' },
+        },
+        {
+          agentId: 'tenant-beta',
+          match: { channel: 'tlon', accountId: 'beta' },
+        },
+      ],
+    };
+
+    expect(resolveWorkspacePromptTargets(config as never)).toEqual([
+      {
+        agentId: 'tenant-alpha',
+        accountId: 'alpha',
+        workspaceDir: '/data/alpha',
+      },
+      {
+        agentId: 'tenant-beta',
+        accountId: 'beta',
+        workspaceDir: '/data/beta',
+      },
+    ]);
+  });
+
+  it('interpolates monolithic prompts from account config, not process env', async () => {
+    const root = await temporaryRoot();
+    const sourceDir = join(root, 'source');
+    const workspaceDir = join(root, 'workspace');
+    await mkdir(sourceDir);
+    await mkdir(workspaceDir);
+    await writeFile(
+      join(sourceDir, 'SOUL.md'),
+      'Bot: ${TLON_SHIP}\nOwner: ${TLON_OWNER_SHIP}\nURL: ${TLON_URL}\n'
+    );
+    vi.stubEnv('TLON_SHIP', 'wrong-env-ship');
+    vi.stubEnv('TLON_OWNER_SHIP', '~wrong-env-owner');
+
+    await upsertPromptFiles({
+      sourceDir,
+      workspaceDir,
+      accountId: 'alpha',
+      config: {
+        channels: {
+          tlon: {
+            deploymentMode: 'monolithic',
+            accounts: {
+              alpha: {
+                ship: '~alpha-bot',
+                ownerShip: '~alpha-owner',
+                url: 'http://alpha-eyre:8080',
+              },
+            },
+          },
+        },
+      } as never,
+      logger: { info: vi.fn(), warn: vi.fn() },
+    });
+
+    expect(await readFile(join(workspaceDir, 'SOUL.md'), 'utf8')).toBe(
+      'Bot: alpha-bot\nOwner: ~alpha-owner\nURL: http://alpha-eyre:8080\n'
+    );
+  });
+
   it('replaces managed prompt blocks idempotently and preserves operator text', async () => {
     const root = await temporaryRoot();
     const sourceDir = join(root, 'source');

@@ -16,3 +16,26 @@ The service runs again after a gateway restart, replacing the prompt refresh
 previously owned by `tlawn.py`.
 
 This package does not contain the Tlon Messenger channel plugin.
+
+## Deployment modes
+
+Self-hosted and existing single-tenant installs keep the normal OpenClaw
+default-agent behavior. No additional route parameters are required.
+
+Central gateways opt in with
+`channels.tlon.deploymentMode: "monolithic"`. In that mode every provider-auth
+request must include the control-plane-resolved `agentId` (query parameter for
+GET/DELETE requests and JSON field for POST requests). Login flows are bound to
+that agent, and polling or completing a flow as another agent returns “not
+found.” Auth status, refresh, model discovery, token storage, and disconnects
+all use the selected agent's auth directory.
+
+Hosted prompt sync also follows exact Tlon account bindings in monolithic
+mode, updating each agent workspace with interpolation values from its own
+`channels.tlon.accounts.<accountId>` entry. The prompt archive is downloaded
+once per sync pass.
+
+The gateway route is an internal operator surface, not the customer
+authorization boundary. The hosting control plane must derive `agentId` from
+the authenticated ship/customer and must never accept a customer-supplied
+agent ID directly.

@@ -12,6 +12,11 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/config-contracts';
+import {
+  listAgentIds,
+  resolveAgentWorkspaceDir,
+  resolveDefaultAgentId,
+} from 'openclaw/plugin-sdk/agent-runtime';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
 import { extract } from 'tar';
 
@@ -25,8 +30,7 @@ const TILDE_JSON_SEGMENT_PATTERN = /\/~([a-z0-9-]+\.json)/g;
 const TLON_FLAGS_PATTERN =
   /tlon\s+--url\s+\S+\s+--ship\s+\S+\s+--code\s+\S+\s+([^\n`]+)/g;
 const HEARTBEAT_PROMPT_NAME = 'HEARTBEAT.md';
-const HEARTBEAT_MARKER_PREFIX =
-  '<!-- idempotency-marker:tlon-heartbeat:';
+const HEARTBEAT_MARKER_PREFIX = '<!-- idempotency-marker:tlon-heartbeat:';
 const BOOT_PROMPT_NAME = 'BOOT.md';
 const BOOT_MARKER_PREFIX = '<!-- idempotency-marker:tlon-boot:';
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
@@ -39,6 +43,12 @@ type Logger = {
 type ShipConfig = {
   ship: string;
   url?: string;
+};
+
+export type WorkspacePromptTarget = {
+  agentId: string;
+  accountId: string | null;
+  workspaceDir: string;
 };
 
 function envValue(name: string): string | undefined {
@@ -65,7 +75,9 @@ function normalizeShip(value: unknown): string | undefined {
   return /^[a-z0-9-]+$/.test(normalized) ? normalized : undefined;
 }
 
-async function readJsonObject(path: string): Promise<Record<string, unknown> | null> {
+async function readJsonObject(
+  path: string
+): Promise<Record<string, unknown> | null> {
   try {
     const value: unknown = JSON.parse(await readFile(path, 'utf8'));
     return value && typeof value === 'object' && !Array.isArray(value)
@@ -81,7 +93,8 @@ async function readShipConfig(path: string): Promise<ShipConfig | null> {
   if (!config) {
     return null;
   }
-  const ship = normalizeShip(config.ship) ?? normalizeShip(basename(path, '.json'));
+  const ship =
+    normalizeShip(config.ship) ?? normalizeShip(basename(path, '.json'));
   if (!ship) {
     return null;
   }
@@ -128,12 +141,9 @@ async function loadKnownShipConfigs(): Promise<Map<string, ShipConfig>> {
 
 function configuredOwnerShip(
   config: OpenClawConfig,
-  activeShip: string | undefined
+  activeShip: string | undefined,
+  accountId?: string | null
 ): string | undefined {
-  const envOwner = normalizeShip(envValue('TLON_OWNER_SHIP'));
-  if (envOwner) {
-    return envOwner;
-  }
   const channels = config.channels as Record<string, unknown> | undefined;
   const tlon =
     channels?.tlon &&
@@ -141,11 +151,27 @@ function configuredOwnerShip(
     !Array.isArray(channels.tlon)
       ? (channels.tlon as Record<string, unknown>)
       : undefined;
-  return normalizeShip(tlon?.ownerShip) ?? activeShip;
+  const accounts =
+    tlon?.accounts &&
+    typeof tlon.accounts === 'object' &&
+    !Array.isArray(tlon.accounts)
+      ? (tlon.accounts as Record<string, Record<string, unknown>>)
+      : undefined;
+  const account = accountId ? accounts?.[accountId] : undefined;
+  const envOwner = accountId
+    ? undefined
+    : normalizeShip(envValue('TLON_OWNER_SHIP'));
+  return (
+    normalizeShip(account?.ownerShip) ??
+    envOwner ??
+    normalizeShip(tlon?.ownerShip) ??
+    activeShip
+  );
 }
 
 async function buildInterpolationContext(
-  config: OpenClawConfig
+  config: OpenClawConfig,
+  accountId?: string | null
 ): Promise<Record<string, string>> {
   const context = Object.fromEntries(
     Object.entries(process.env).filter(
@@ -153,9 +179,20 @@ async function buildInterpolationContext(
     )
   );
   const shipConfigs = await loadKnownShipConfigs();
-  let activeShip = normalizeShip(context.TLON_SHIP);
+  const tlon = config.channels?.tlon as
+    | {
+        accounts?: Record<
+          string,
+          { ship?: string; url?: string; ownerShip?: string }
+        >;
+      }
+    | undefined;
+  const account = accountId ? tlon?.accounts?.[accountId] : undefined;
+  let activeShip =
+    normalizeShip(account?.ship) ??
+    (accountId ? undefined : normalizeShip(context.TLON_SHIP));
   const activeConfigPath = envValue('TLON_CONFIG_FILE');
-  if (activeConfigPath) {
+  if (!accountId && activeConfigPath) {
     const activeConfig = await readShipConfig(activeConfigPath);
     const configuredShip = normalizeShip(activeConfig?.ship);
     if (activeConfig && configuredShip) {
@@ -165,19 +202,18 @@ async function buildInterpolationContext(
   }
 
   if (activeShip) {
-    context.TLON_SHIP ||= activeShip;
-    const activeUrl = shipConfigs.get(activeShip)?.url;
+    context.TLON_SHIP = activeShip;
+    const activeUrl = account?.url ?? shipConfigs.get(activeShip)?.url;
     if (activeUrl) {
-      context.TLON_URL ||= activeUrl;
+      context.TLON_URL = activeUrl;
     }
   }
 
-  const ownerShip = configuredOwnerShip(config, activeShip);
+  const ownerShip = configuredOwnerShip(config, activeShip, accountId);
   if (ownerShip) {
     context.TLON_OWNER_SHIP_ID = ownerShip;
     context.TLON_OWNER_SHIP = `~${ownerShip}`;
-    context.TLON_OWNER_CONFIG_PATH =
-      `/usr/local/share/openclaw/skills/tlon/ships/${ownerShip}.json`;
+    context.TLON_OWNER_CONFIG_PATH = `/usr/local/share/openclaw/skills/tlon/ships/${ownerShip}.json`;
     const ownerUrl =
       shipConfigs.get(ownerShip)?.url ??
       (ownerShip === activeShip ? context.TLON_URL : undefined);
@@ -324,7 +360,11 @@ async function listFiles(root: string): Promise<string[]> {
   return files;
 }
 
-function destinationPath(workspaceDir: string, sourceRoot: string, source: string) {
+function destinationPath(
+  workspaceDir: string,
+  sourceRoot: string,
+  source: string
+) {
   const destination = resolve(workspaceDir, relative(sourceRoot, source));
   const root = resolve(workspaceDir);
   if (destination !== root && !destination.startsWith(`${root}${sep}`)) {
@@ -338,8 +378,12 @@ export async function upsertPromptFiles(params: {
   workspaceDir: string;
   config: OpenClawConfig;
   logger: Logger;
+  accountId?: string | null;
 }): Promise<void> {
-  const context = await buildInterpolationContext(params.config);
+  const context = await buildInterpolationContext(
+    params.config,
+    params.accountId
+  );
   for (const source of await listFiles(params.sourceDir)) {
     const destination = destinationPath(
       params.workspaceDir,
@@ -387,11 +431,73 @@ function promptArchiveUrl(): string {
   return `https://storage.googleapis.com/tlon-${envValue('PIONEER_ENV')}-bots/prompts.tar.gz`;
 }
 
-export async function syncWorkspacePrompts(params: {
-  workspaceDir: string;
+export function resolveWorkspacePromptTargets(
+  config: OpenClawConfig,
+  standaloneWorkspaceDir?: string | null
+): WorkspacePromptTarget[] {
+  const tlon = config.channels?.tlon as
+    | {
+        deploymentMode?: string;
+        accounts?: Record<string, unknown>;
+      }
+    | undefined;
+  if (tlon?.deploymentMode !== 'monolithic') {
+    return standaloneWorkspaceDir
+      ? [
+          {
+            agentId: resolveDefaultAgentId(config),
+            accountId: null,
+            workspaceDir: standaloneWorkspaceDir,
+          },
+        ]
+      : [];
+  }
+
+  const configuredAgents = new Set(listAgentIds(config));
+  const targets = new Map<string, WorkspacePromptTarget>();
+  for (const binding of config.bindings ?? []) {
+    if (
+      binding.type === 'acp' ||
+      binding.match.channel !== 'tlon' ||
+      !binding.match.accountId ||
+      binding.match.accountId === '*'
+    ) {
+      continue;
+    }
+    const agentId = binding.agentId.trim();
+    const accountId = binding.match.accountId.trim();
+    if (
+      !configuredAgents.has(agentId) ||
+      !Object.hasOwn(tlon.accounts ?? {}, accountId)
+    ) {
+      throw new Error(
+        `invalid monolithic Tlon binding: ${agentId} -> ${accountId}`
+      );
+    }
+    const existing = targets.get(agentId);
+    if (existing && existing.accountId !== accountId) {
+      throw new Error(`agent ${agentId} is bound to multiple Tlon accounts`);
+    }
+    targets.set(agentId, {
+      agentId,
+      accountId,
+      workspaceDir: resolveAgentWorkspaceDir(config, agentId),
+    });
+  }
+  if (targets.size === 0) {
+    throw new Error('monolithic mode has no exact Tlon account bindings');
+  }
+  return [...targets.values()];
+}
+
+async function syncWorkspacePromptTargets(params: {
+  targets: WorkspacePromptTarget[];
   config: OpenClawConfig;
   logger: Logger;
 }): Promise<void> {
+  if (params.targets.length === 0) {
+    return;
+  }
   const url = promptArchiveUrl();
   params.logger.info(`fetching prompts from ${url}`);
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'tlon-hosting-prompts-'));
@@ -414,31 +520,58 @@ export async function syncWorkspacePrompts(params: {
         !('type' in entry) ||
         (entry.type !== 'SymbolicLink' && entry.type !== 'Link'),
     });
-    await upsertPromptFiles({
-      sourceDir: extracted,
-      workspaceDir: params.workspaceDir,
-      config: params.config,
-      logger: params.logger,
-    });
-    params.logger.info(`upserted prompts into ${params.workspaceDir}`);
+    for (const target of params.targets) {
+      await upsertPromptFiles({
+        sourceDir: extracted,
+        workspaceDir: target.workspaceDir,
+        config: params.config,
+        logger: params.logger,
+        accountId: target.accountId,
+      });
+      params.logger.info(
+        `upserted prompts into ${target.workspaceDir} for agent ${target.agentId}`
+      );
+    }
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
+}
+
+export async function syncWorkspacePrompts(params: {
+  workspaceDir: string;
+  config: OpenClawConfig;
+  logger: Logger;
+}): Promise<void> {
+  await syncWorkspacePromptTargets({
+    targets: [
+      {
+        agentId: resolveDefaultAgentId(params.config),
+        accountId: null,
+        workspaceDir: params.workspaceDir,
+      },
+    ],
+    config: params.config,
+    logger: params.logger,
+  });
 }
 
 export function registerWorkspacePromptSync(api: OpenClawPluginApi): void {
   api.registerService({
     id: 'tlon-hosting-workspace-prompts',
     start: async (context) => {
-      if (!context.workspaceDir) {
-        context.logger.warn(
-          '[tlon-hosting] workspace unavailable; skipping hosted prompt sync'
-        );
-        return;
-      }
       try {
-        await syncWorkspacePrompts({
-          workspaceDir: context.workspaceDir,
+        const targets = resolveWorkspacePromptTargets(
+          context.config,
+          context.workspaceDir
+        );
+        if (targets.length === 0) {
+          context.logger.warn(
+            '[tlon-hosting] workspace unavailable; skipping hosted prompt sync'
+          );
+          return;
+        }
+        await syncWorkspacePromptTargets({
+          targets,
           config: context.config,
           logger: context.logger,
         });

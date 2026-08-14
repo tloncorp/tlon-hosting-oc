@@ -4,8 +4,11 @@ import {
   clearAuthProfileCooldown,
   clearRuntimeAuthProfileStoreSnapshots,
   ensureAuthProfileStore,
+  listAgentIds,
   listProfilesForProvider,
   resolveApiKeyForProfile,
+  resolveAgentDir,
+  resolveDefaultAgentId,
   resolveDefaultAgentDir,
 } from 'openclaw/plugin-sdk/agent-runtime';
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
@@ -30,8 +33,7 @@ const ANTHROPIC_PROFILE_ID = 'anthropic:default';
 const OPENAI_CODEX_MODELS_URL =
   'https://chatgpt.com/backend-api/codex/models?client_version=1.0.0';
 const OPENAI_CODEX_MODELS_TIMEOUT_MS = 10_000;
-const XAI_GROK_OAUTH_MODELS_URL =
-  'https://cli-chat-proxy.grok.com/v1/models';
+const XAI_GROK_OAUTH_MODELS_URL = 'https://cli-chat-proxy.grok.com/v1/models';
 const XAI_GROK_OAUTH_MODELS_TIMEOUT_MS = 10_000;
 
 type ProviderId = 'openai' | 'anthropic' | 'xai';
@@ -45,6 +47,7 @@ type FlowStatus =
 
 type ProviderAuthFlow = {
   id: string;
+  agentId: string;
   provider: ProviderId;
   status: FlowStatus;
   createdAt: number;
@@ -95,12 +98,55 @@ function writeJson(res: ServerResponse, statusCode: number, payload: unknown) {
 function publicFlow(flow: ProviderAuthFlow): PublicProviderAuthFlow {
   return {
     id: flow.id,
+    agentId: flow.agentId,
     provider: flow.provider,
     status: flow.status,
     expiresAt: flow.expiresAt,
     ...(flow.verificationUrl ? { verificationUrl: flow.verificationUrl } : {}),
     ...(flow.userCode ? { userCode: flow.userCode } : {}),
     ...(flow.error ? { error: flow.error } : {}),
+  };
+}
+
+export type ProviderAuthAgentScope = {
+  agentId: string;
+  agentDir: string;
+  isDefault: boolean;
+};
+
+function isMonolithic(cfg: OpenClawConfig): boolean {
+  return (
+    (cfg.channels?.tlon as { deploymentMode?: string } | undefined)
+      ?.deploymentMode === 'monolithic'
+  );
+}
+
+/**
+ * Resolve a provider-auth operation to one configured agent. Standalone
+ * installs retain the historical default-agent behavior; centralized hosting
+ * must explicitly supply the server-authorized agent id on every request.
+ */
+export function resolveProviderAuthAgentScope(
+  cfg: OpenClawConfig,
+  requestedAgentId?: unknown
+): ProviderAuthAgentScope {
+  const explicit =
+    typeof requestedAgentId === 'string' ? requestedAgentId.trim() : '';
+  if (isMonolithic(cfg) && !explicit) {
+    throw new Error('agentId is required in monolithic deployment mode');
+  }
+
+  const defaultAgentId = resolveDefaultAgentId(cfg);
+  const agentId = explicit || defaultAgentId;
+  if (!listAgentIds(cfg).includes(agentId)) {
+    throw new Error('agentId is not configured');
+  }
+  return {
+    agentId,
+    agentDir: explicit
+      ? resolveAgentDir(cfg, agentId)
+      : resolveDefaultAgentDir(cfg),
+    isDefault: agentId === defaultAgentId,
   };
 }
 
@@ -455,9 +501,7 @@ export function parseDeviceCodeVerificationMessage(
   if (
     url.protocol !== 'https:' ||
     !trustedUrl ||
-    (provider === 'xai' &&
-      urlUserCode !== null &&
-      urlUserCode !== codeMatch[1])
+    (provider === 'xai' && urlUserCode !== null && urlUserCode !== codeMatch[1])
   ) {
     return null;
   }
@@ -521,13 +565,14 @@ function createPrompter(params: {
 async function runDeviceCodeFlow(
   api: OpenClawPluginApi,
   flowId: string,
-  provider: DeviceCodeProviderId
+  provider: DeviceCodeProviderId,
+  agentId: string
 ) {
   try {
     await runModelsAuthLoginFlow({
       provider,
       method: 'device-code',
-      agent: 'main',
+      agent: agentId,
       runtime: createRuntime(api),
       prompter: createPrompter({
         onNote: (message) => {
@@ -546,7 +591,7 @@ async function runDeviceCodeFlow(
       isRemote: true,
       openUrl: async () => {},
     });
-    await refreshGatewayAuthState(api);
+    await refreshGatewayAuthState(api, agentId);
     updateFlow(flowId, { status: 'complete' });
   } catch (error) {
     // OpenClaw 7.1 persists the auth profile before applying the provider's
@@ -557,7 +602,7 @@ async function runDeviceCodeFlow(
       api.logger.info(
         `[tlon-hosting] ${provider} auth saved; skipped optional root-managed config patch`
       );
-      await refreshGatewayAuthState(api);
+      await refreshGatewayAuthState(api, agentId);
       updateFlow(flowId, { status: 'complete' });
       return;
     }
@@ -568,7 +613,8 @@ async function runDeviceCodeFlow(
 async function runAnthropicFlow(
   api: OpenClawPluginApi,
   flowId: string,
-  token: string
+  token: string,
+  scope: ProviderAuthAgentScope
 ) {
   updateFlow(flowId, { status: 'authenticating', error: undefined });
   try {
@@ -578,8 +624,6 @@ async function runAnthropicFlow(
       throw new Error(validationError);
     }
 
-    const cfg = api.runtime.config.current() as OpenClawConfig;
-    const agentDir = resolveDefaultAgentDir(cfg);
     const store = await upsertAuthProfileWithLock({
       profileId: ANTHROPIC_PROFILE_ID,
       credential: {
@@ -587,7 +631,7 @@ async function runAnthropicFlow(
         provider: 'anthropic',
         token: normalizedToken,
       },
-      agentDir,
+      agentDir: scope.agentDir,
     });
     if (!store) {
       throw new Error(
@@ -597,9 +641,9 @@ async function runAnthropicFlow(
     await clearAuthProfileCooldown({
       store,
       profileId: ANTHROPIC_PROFILE_ID,
-      agentDir,
+      agentDir: scope.agentDir,
     });
-    await refreshGatewayAuthState(api);
+    await refreshGatewayAuthState(api, scope.agentId);
     updateFlow(flowId, { status: 'complete' });
   } catch (error) {
     updateFlow(flowId, {
@@ -609,9 +653,11 @@ async function runAnthropicFlow(
   }
 }
 
-async function refreshExpiredOAuthProfiles(api: OpenClawPluginApi) {
+async function refreshExpiredOAuthProfiles(
+  api: OpenClawPluginApi,
+  agentDir: string
+) {
   const cfg = api.runtime.config.current() as OpenClawConfig;
-  const agentDir = resolveDefaultAgentDir(cfg);
   const store = ensureAuthProfileStore(agentDir, {
     allowKeychainPrompt: false,
     config: cfg,
@@ -651,7 +697,87 @@ async function requestFreshGatewayAuthState(api: OpenClawPluginApi) {
   });
 }
 
-async function refreshGatewayAuthState(api: OpenClawPluginApi) {
+function buildAgentAuthStatus(
+  cfg: OpenClawConfig,
+  agentDir: string
+): Record<string, unknown> {
+  const store = ensureAuthProfileStore(agentDir, {
+    allowKeychainPrompt: false,
+    config: cfg,
+  });
+  const now = Date.now();
+  const providers = (['openai', 'anthropic', 'xai'] as const).map(
+    (provider) => {
+      const profileIds = listProfilesForProvider(store, provider).filter(
+        (profileId) => {
+          const credential = store.profiles[profileId];
+          return provider === 'anthropic'
+            ? credential?.type === 'oauth' || credential?.type === 'token'
+            : credential?.type === 'oauth';
+        }
+      );
+      const expiries = profileIds.flatMap((profileId) => {
+        const credential = store.profiles[profileId];
+        const expires =
+          credential?.type === 'oauth' ? credential.expires : undefined;
+        return typeof expires === 'number' ? [expires] : [];
+      });
+      const earliestExpiry = expiries.length > 0 ? Math.min(...expiries) : null;
+      const status =
+        profileIds.length === 0
+          ? 'missing'
+          : earliestExpiry !== null && earliestExpiry <= now
+            ? 'expired'
+            : earliestExpiry !== null &&
+                earliestExpiry <= now + 24 * 60 * 60_000
+              ? 'expiring'
+              : 'ok';
+      return {
+        provider,
+        status,
+        profiles: profileIds.map((profileId) => ({
+          profileId,
+          provider,
+          type: store.profiles[profileId]?.type,
+        })),
+        ...(earliestExpiry !== null
+          ? {
+              expiry: {
+                at: earliestExpiry,
+                remainingMs: earliestExpiry - now,
+                label: new Date(earliestExpiry).toISOString(),
+              },
+            }
+          : {}),
+      };
+    }
+  );
+  return { ts: now, providers };
+}
+
+async function requestAgentAuthState(
+  api: OpenClawPluginApi,
+  scope: ProviderAuthAgentScope
+): Promise<unknown> {
+  if (scope.isDefault) {
+    return await requestFreshGatewayAuthState(api);
+  }
+  clearRuntimeAuthProfileStoreSnapshots();
+  return buildAgentAuthStatus(
+    api.runtime.config.current() as OpenClawConfig,
+    scope.agentDir
+  );
+}
+
+async function refreshGatewayAuthState(
+  api: OpenClawPluginApi,
+  agentId: string
+) {
+  const cfg = api.runtime.config.current() as OpenClawConfig;
+  clearRuntimeAuthProfileStoreSnapshots();
+  if (agentId !== resolveDefaultAgentId(cfg)) {
+    return;
+  }
   try {
     await requestFreshGatewayAuthState(api);
   } catch (error) {
@@ -662,10 +788,10 @@ async function refreshGatewayAuthState(api: OpenClawPluginApi) {
 }
 
 async function loadOpenAISubscriptionModels(
-  api: OpenClawPluginApi
+  api: OpenClawPluginApi,
+  agentDir: string
 ): Promise<SubscriptionModel[]> {
   const cfg = api.runtime.config.current() as OpenClawConfig;
-  const agentDir = resolveDefaultAgentDir(cfg);
   const store = ensureAuthProfileStore(agentDir, {
     allowKeychainPrompt: false,
     config: cfg,
@@ -728,10 +854,10 @@ async function loadOpenAISubscriptionModels(
 
 async function loadOAuthSubscriptionModels(
   api: OpenClawPluginApi,
-  adapter: OAuthSubscriptionModelAdapter
+  adapter: OAuthSubscriptionModelAdapter,
+  agentDir: string
 ): Promise<SubscriptionModel[]> {
   const cfg = api.runtime.config.current() as OpenClawConfig;
-  const agentDir = resolveDefaultAgentDir(cfg);
   const store = ensureAuthProfileStore(agentDir, {
     allowKeychainPrompt: false,
     config: cfg,
@@ -792,11 +918,12 @@ const xaiOAuthModelAdapter: OAuthSubscriptionModelAdapter = {
 };
 
 async function loadSubscriptionModelCatalog(
-  api: OpenClawPluginApi
+  api: OpenClawPluginApi,
+  agentDir: string
 ): Promise<SubscriptionModelCatalog> {
   const [openai, xai, gatewayResult] = await Promise.all([
-    loadOpenAISubscriptionModels(api),
-    loadOAuthSubscriptionModels(api, xaiOAuthModelAdapter),
+    loadOpenAISubscriptionModels(api, agentDir),
+    loadOAuthSubscriptionModels(api, xaiOAuthModelAdapter, agentDir),
     api.runtime.gateway
       .request('models.list', { view: 'all' })
       .catch((error: unknown) => {
@@ -818,7 +945,8 @@ async function loadSubscriptionModelCatalog(
 
 function includeDetectedAuthFailures(
   api: OpenClawPluginApi,
-  value: unknown
+  value: unknown,
+  agentDir: string
 ): unknown {
   if (!value || typeof value !== 'object') {
     return value;
@@ -831,7 +959,6 @@ function includeDetectedAuthFailures(
   }
 
   const cfg = api.runtime.config.current() as OpenClawConfig;
-  const agentDir = resolveDefaultAgentDir(cfg);
   const store = ensureAuthProfileStore(agentDir, {
     allowKeychainPrompt: false,
     config: cfg,
@@ -891,10 +1018,11 @@ function includeDetectedAuthFailures(
   };
 }
 
-function createFlow(provider: ProviderId): ProviderAuthFlow {
+function createFlow(provider: ProviderId, agentId: string): ProviderAuthFlow {
   const now = Date.now();
   const flow: ProviderAuthFlow = {
     id: randomUUID(),
+    agentId,
     provider,
     status: provider === 'anthropic' ? 'awaiting_token' : 'awaiting_browser',
     createdAt: now,
@@ -917,12 +1045,24 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
 
       try {
         if (req.method === 'GET' && suffix === '/status') {
-          await refreshExpiredOAuthProfiles(api);
+          const cfg = api.runtime.config.current() as OpenClawConfig;
+          const scope = resolveProviderAuthAgentScope(
+            cfg,
+            url.searchParams.get('agentId')
+          );
+          await refreshExpiredOAuthProfiles(api, scope.agentDir);
           // Refresh auth first so auth-dependent provider catalogs (notably
           // xAI OAuth) cannot race model discovery with stale credentials.
-          const result = await requestFreshGatewayAuthState(api);
-          const subscriptionModels = await loadSubscriptionModelCatalog(api);
-          const status = includeDetectedAuthFailures(api, result);
+          const result = await requestAgentAuthState(api, scope);
+          const subscriptionModels = await loadSubscriptionModelCatalog(
+            api,
+            scope.agentDir
+          );
+          const status = includeDetectedAuthFailures(
+            api,
+            result,
+            scope.agentDir
+          );
           writeJson(res, 200, {
             ...(status && typeof status === 'object' ? status : {}),
             subscriptionModels,
@@ -932,6 +1072,8 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
 
         if (req.method === 'POST' && suffix === '/start') {
           const body = asRecord(await readJsonBody(req));
+          const cfg = api.runtime.config.current() as OpenClawConfig;
+          const scope = resolveProviderAuthAgentScope(cfg, body.agentId);
           const provider = normalizeProvider(body.provider);
           if (!provider) {
             writeJson(res, 400, {
@@ -940,9 +1082,9 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
             return;
           }
 
-          const flow = createFlow(provider);
+          const flow = createFlow(provider, scope.agentId);
           if (provider !== 'anthropic') {
-            void runDeviceCodeFlow(api, flow.id, provider);
+            void runDeviceCodeFlow(api, flow.id, provider, scope.agentId);
             if (!flow.verificationUrl && flow.status === 'awaiting_browser') {
               await waitForFlowUpdate(flow.id);
             }
@@ -952,9 +1094,14 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
         }
 
         if (req.method === 'GET' && suffix === '/flow') {
+          const cfg = api.runtime.config.current() as OpenClawConfig;
+          const scope = resolveProviderAuthAgentScope(
+            cfg,
+            url.searchParams.get('agentId')
+          );
           const flowId = url.searchParams.get('flowId');
           const flow = flowId ? flows.get(flowId) : undefined;
-          if (!flow) {
+          if (!flow || flow.agentId !== scope.agentId) {
             writeJson(res, 404, { error: 'flow not found or expired' });
             return;
           }
@@ -964,11 +1111,17 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
 
         if (req.method === 'POST' && suffix === '/complete') {
           const body = asRecord(await readJsonBody(req));
+          const cfg = api.runtime.config.current() as OpenClawConfig;
+          const scope = resolveProviderAuthAgentScope(cfg, body.agentId);
           const flowId =
             typeof body.flowId === 'string' ? body.flowId.trim() : '';
           const token = typeof body.token === 'string' ? body.token.trim() : '';
           const flow = flows.get(flowId);
-          if (!flow || flow.provider !== 'anthropic') {
+          if (
+            !flow ||
+            flow.provider !== 'anthropic' ||
+            flow.agentId !== scope.agentId
+          ) {
             writeJson(res, 404, { error: 'flow not found or expired' });
             return;
           }
@@ -983,7 +1136,7 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
             return;
           }
 
-          await runAnthropicFlow(api, flow.id, token);
+          await runAnthropicFlow(api, flow.id, token, scope);
           const completedFlow = flows.get(flow.id) ?? flow;
           writeJson(res, completedFlow.status === 'complete' ? 200 : 400, {
             flow: publicFlow(completedFlow),
@@ -1000,22 +1153,25 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
             return;
           }
           const cfg = api.runtime.config.current() as OpenClawConfig;
-          const agentDir = resolveDefaultAgentDir(cfg);
-          const store = ensureAuthProfileStore(agentDir, {
+          const scope = resolveProviderAuthAgentScope(
+            cfg,
+            url.searchParams.get('agentId')
+          );
+          const store = ensureAuthProfileStore(scope.agentDir, {
             allowKeychainPrompt: false,
             config: cfg,
           });
           const removedProfiles = listProfilesForProvider(store, provider);
           const updated = await removeProviderAuthProfilesWithLock({
             provider,
-            agentDir,
+            agentDir: scope.agentDir,
           });
           if (!updated) {
             throw new Error(
               'Failed to update the auth profile store; please try again'
             );
           }
-          await refreshGatewayAuthState(api);
+          await refreshGatewayAuthState(api, scope.agentId);
           writeJson(res, 200, { provider, removedProfiles });
           return;
         }
@@ -1026,7 +1182,8 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
         const statusCode =
           message.includes('JSON') ||
           message.includes('request body') ||
-          message.includes('too large')
+          message.includes('too large') ||
+          message.includes('agentId')
             ? 400
             : 500;
         writeJson(res, statusCode, { error: message });

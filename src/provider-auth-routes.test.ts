@@ -8,7 +8,42 @@ import {
   isManagedConfigLockPermissionError,
   parseDeviceCodeVerificationMessage,
   parseOpenAIVerificationMessage,
+  resolveProviderAuthAgentScope,
 } from './provider-auth-routes.js';
+
+describe('resolveProviderAuthAgentScope', () => {
+  it('preserves default-agent behavior for standalone self-hosters', () => {
+    const scope = resolveProviderAuthAgentScope({});
+    expect(scope.agentId).toBe('main');
+    expect(scope.isDefault).toBe(true);
+  });
+
+  it('requires an explicit configured agent in monolithic mode', () => {
+    const config = {
+      channels: { tlon: { deploymentMode: 'monolithic' } },
+      agents: {
+        list: [
+          { id: 'main' },
+          { id: 'tenant-alpha', agentDir: '/data/agents/tenant-alpha' },
+        ],
+      },
+    };
+
+    expect(() => resolveProviderAuthAgentScope(config)).toThrow(
+      /agentId is required/
+    );
+    expect(resolveProviderAuthAgentScope(config, 'tenant-alpha')).toMatchObject(
+      {
+        agentId: 'tenant-alpha',
+        agentDir: '/data/agents/tenant-alpha',
+        isDefault: false,
+      }
+    );
+    expect(() => resolveProviderAuthAgentScope(config, 'missing')).toThrow(
+      /not configured/
+    );
+  });
+});
 
 describe('extractSubscriptionModels', () => {
   it('keeps available subscription-compatible models separate by provider', () => {
