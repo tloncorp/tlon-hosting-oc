@@ -8,14 +8,6 @@ import type {
   OpenClawPluginServiceContext,
 } from 'openclaw/plugin-sdk/plugin-runtime';
 
-import {
-  BASIC_PROVIDER,
-  configuredPrimaryModel,
-  HOSTED_DEFAULT_PROVIDER,
-  normalizeModelRef,
-  RETIRED_HOSTED_MODEL_REFS,
-} from './hosted-model-policy.js';
-
 type Logger = Pick<OpenClawPluginApi['logger'], 'info' | 'warn'>;
 type SessionStoreRuntime = {
   listSessionEntries: (params: {
@@ -52,91 +44,11 @@ const SESSION_MODEL_OVERRIDE_FIELDS: ReadonlyArray<keyof SessionEntry> = [
   'modelOverrideFallbackOriginModel',
 ];
 
-function modelFieldsUseRetiredModel(
-  entry: SessionEntry,
-  providerField: 'providerOverride' | 'modelOverrideFallbackOriginProvider',
-  modelField: 'modelOverride' | 'modelOverrideFallbackOriginModel'
-): boolean {
-  const provider = normalizeModelRef(entry[providerField]);
-  const model = normalizeModelRef(entry[modelField]);
-  if (!model) {
-    return false;
-  }
-  return (
-    RETIRED_HOSTED_MODEL_REFS.has(model) ||
-    (provider !== '' && RETIRED_HOSTED_MODEL_REFS.has(`${provider}/${model}`))
-  );
-}
-
-function sessionUsesRetiredModel(entry: SessionEntry): boolean {
-  return modelFieldsUseRetiredModel(entry, 'providerOverride', 'modelOverride');
-}
-
-function sessionHasRetiredFallbackOrigin(entry: SessionEntry): boolean {
-  return modelFieldsUseRetiredModel(
-    entry,
-    'modelOverrideFallbackOriginProvider',
-    'modelOverrideFallbackOriginModel'
-  );
-}
-
-function sessionUsesBasicOverride(entry: SessionEntry): boolean {
-  const provider = normalizeModelRef(entry.providerOverride);
-  const model = normalizeModelRef(entry.modelOverride);
-  return provider === BASIC_PROVIDER || model.startsWith(`${BASIC_PROVIDER}/`);
-}
-
-function sessionHasAutomaticModelOverride(entry: SessionEntry): boolean {
-  const source = normalizeModelRef(entry.modelOverrideSource);
-  if (source === 'auto') {
-    return true;
-  }
-  if (source) {
-    return false;
-  }
-  const hasOverride = Boolean(
-    normalizeModelRef(entry.providerOverride) ||
-      normalizeModelRef(entry.modelOverride)
-  );
-  const hasFallbackOrigin = Boolean(
-    normalizeModelRef(entry.modelOverrideFallbackOriginProvider) &&
-      normalizeModelRef(entry.modelOverrideFallbackOriginModel)
-  );
-  return hasOverride && hasFallbackOrigin;
-}
-
-function sessionFallbackOriginRef(entry: SessionEntry): string | undefined {
-  const provider = String(
-    entry.modelOverrideFallbackOriginProvider ?? ''
-  ).trim();
-  const model = String(entry.modelOverrideFallbackOriginModel ?? '').trim();
-  if (!model) {
-    return undefined;
-  }
-  return provider ? `${provider}/${model}` : model;
-}
-
-function sessionHasStaleAutomaticOverride(
-  entry: SessionEntry,
-  currentPrimaryModel: string | undefined
-): boolean {
-  if (!sessionHasAutomaticModelOverride(entry)) {
-    return false;
-  }
-  if (
-    sessionUsesRetiredModel(entry) ||
-    sessionHasRetiredFallbackOrigin(entry)
-  ) {
-    return true;
-  }
-  const fallbackOrigin = sessionFallbackOriginRef(entry);
-  return Boolean(
-    fallbackOrigin &&
-      currentPrimaryModel &&
-      normalizeModelRef(fallbackOrigin) !==
-        normalizeModelRef(currentPrimaryModel)
-  );
-}
+const SESSION_AUTH_PROFILE_OVERRIDE_FIELDS: ReadonlyArray<keyof SessionEntry> = [
+  'authProfileOverride',
+  'authProfileOverrideSource',
+  'authProfileOverrideCompactionCount',
+];
 
 function deleteFields(
   entry: SessionEntry,
@@ -153,50 +65,25 @@ function clearSessionModelRuntimeCache(entry: SessionEntry): void {
 
 function clearSessionModelOverride(entry: SessionEntry): void {
   deleteFields(entry, SESSION_MODEL_OVERRIDE_FIELDS);
-  const authSource = normalizeModelRef(entry.authProfileOverrideSource);
-  const recoveredAutomaticAuth =
-    !authSource && entry.authProfileOverrideCompactionCount !== undefined;
-  if (authSource === 'auto' || recoveredAutomaticAuth) {
-    delete entry.authProfileOverride;
-    delete entry.authProfileOverrideSource;
-    delete entry.authProfileOverrideCompactionCount;
-  }
+  deleteFields(entry, SESSION_AUTH_PROFILE_OVERRIDE_FIELDS);
   clearSessionModelRuntimeCache(entry);
 }
 
 export function migrateHostedSessionEntry(
-  entry: SessionEntry,
-  currentPrimaryModel: string | undefined
+  entry: SessionEntry
 ): SessionEntry | null {
-  const migrated = { ...entry };
-  const usesRetiredModel = sessionUsesRetiredModel(migrated);
-
-  // Basic and automatic selections follow the configured default. Removing
-  // their concrete override lets OpenClaw resolve that default on the next turn.
-  if (
-    sessionUsesBasicOverride(migrated) ||
-    sessionHasStaleAutomaticOverride(migrated, currentPrimaryModel)
-  ) {
-    clearSessionModelOverride(migrated);
-    return migrated;
-  }
-  if (!usesRetiredModel) {
+  const hasModelOverride = SESSION_MODEL_OVERRIDE_FIELDS.some(field =>
+    Object.hasOwn(entry, field)
+  );
+  if (!hasModelOverride) {
     return null;
   }
 
-  // Retired pins are cleared rather than rewritten to a replacement model so
-  // the session follows the configured default from the next turn onward.
-  const previousProvider = normalizeModelRef(migrated.providerOverride);
+  // Hosted sessions always inherit their effective configured default. Remove
+  // every concrete model and associated auth selection instead of copying the
+  // current default into the session, so future default changes flow through.
+  const migrated = { ...entry };
   clearSessionModelOverride(migrated);
-  if (
-    previousProvider !== '' &&
-    previousProvider !== BASIC_PROVIDER &&
-    previousProvider !== HOSTED_DEFAULT_PROVIDER
-  ) {
-    delete migrated.authProfileOverride;
-    delete migrated.authProfileOverrideSource;
-    delete migrated.authProfileOverrideCompactionCount;
-  }
   return migrated;
 }
 
@@ -235,7 +122,6 @@ export async function migrateHostedSessionModels(params: {
     ...process.env,
     OPENCLAW_STATE_DIR: stateDir,
   };
-  const currentPrimaryModel = configuredPrimaryModel(config);
   let changedSessions = 0;
 
   for (const agentId of configuredAgentIds(config)) {
@@ -258,10 +144,7 @@ export async function migrateHostedSessionModels(params: {
           sessionKey,
           replaceEntry: true,
           update: (entry) => {
-            const migrated = migrateHostedSessionEntry(
-              entry,
-              currentPrimaryModel
-            );
+            const migrated = migrateHostedSessionEntry(entry);
             changed = migrated !== null;
             return migrated;
           },
@@ -281,7 +164,7 @@ export async function migrateHostedSessionModels(params: {
     logger.info(
       `[tlon-hosting] Migrated ${changedSessions} hosted session model selection${
         changedSessions === 1 ? '' : 's'
-      }; retired model selections now follow the configured default`
+      }; sessions now follow their configured defaults`
     );
   }
   return { changedSessions };
