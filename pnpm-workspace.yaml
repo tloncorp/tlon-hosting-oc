@@ -1,0 +1,9 @@
+packages:
+  - .
+
+# This compatibility branch intentionally adopts the exactly pinned OpenClaw
+# release before pnpm's default release-age quarantine expires. Keep these
+# exceptions version-scoped so later OpenClaw releases still require review.
+minimumReleaseAgeExclude:
+  - openclaw@2026.8.1
+  - "@openclaw/ai@2026.8.1"
