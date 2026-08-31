@@ -25,12 +25,12 @@
   },
   "devDependencies": {
     "@types/node": "^25.4.0",
-    "openclaw": "2026.7.1",
+    "openclaw": "2026.8.1",
     "typescript": "^5.7.0",
     "vitest": "^4.0.0"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.7.1"
+    "openclaw": ">=2026.8.1"
   },
   "dependencies": {
     "tar": "7.5.16"
@@ -40,7 +40,7 @@
       "./dist/index.js"
     ],
     "install": {
-      "minHostVersion": ">=2026.7.1",
+      "minHostVersion": ">=2026.8.1",
       "localPath": "extensions/tlon-hosting-oc"
     }
   },

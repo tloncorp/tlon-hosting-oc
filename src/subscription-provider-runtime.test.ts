@@ -96,7 +96,7 @@ describe('registerSubscriptionProviderRuntimes', () => {
     );
   });
 
-  it('loads the bundled OpenClaw 7.1 runtime hooks', () => {
+  it('loads the OpenClaw 8.1 provider runtime hooks', () => {
     const api = makeApi({
       plugins: { allow: ['tlon'] },
     });
@@ -125,8 +125,8 @@ describe('registerSubscriptionProviderRuntimes', () => {
     ).toMatchObject({
       id: 'gpt-5.6-luna',
       provider: 'openai',
-      api: 'openai-chatgpt-responses',
-      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      api: 'openai-responses',
+      baseUrl: 'https://api.openai.com/v1',
     });
     expect(providerById.get('openai')?.refreshOAuth).toBeTypeOf('function');
     expect(providerById.get('anthropic')?.resolveDynamicModel).toBeTypeOf(

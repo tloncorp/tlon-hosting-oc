@@ -1,7 +1,9 @@
-import type {
-  OpenClawPluginApi,
-  PluginHookBeforeToolCallResult,
-} from 'openclaw/plugin-sdk/plugin-runtime';
+import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
+
+type BeforeToolCallResult = {
+  block: true;
+  blockReason: string;
+};
 
 type CronTriggerGuardApi = Pick<
   OpenClawPluginApi,
@@ -19,7 +21,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function guardCronParams(
   params: Record<string, unknown>
-): PluginHookBeforeToolCallResult | undefined {
+): BeforeToolCallResult | undefined {
   const action = params.action;
   const containerKey =
     action === 'add' ? 'job' : action === 'update' ? 'patch' : undefined;

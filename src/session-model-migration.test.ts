@@ -49,7 +49,6 @@ describe('session model migration', () => {
     const store = createSessionStore({
       openrouter: {
         sessionId: 'one',
-        sessionFile: 'one.jsonl',
         updatedAt: 1,
         providerOverride: 'openrouter',
         modelOverride: 'minimax/minimax-m3',
@@ -78,7 +77,11 @@ describe('session model migration', () => {
           messageCount: 2,
           unwindowedMessageCount: 2,
         },
-        fallbackNoticeSelectedModel: 'minimax/minimax-m3',
+        fallbackNotice: {
+          kind: 'active',
+          selectedModel: 'minimax/minimax-m3',
+          activeModel: 'anthropic/claude-opus-4-6',
+        },
       },
       direct: {
         sessionId: 'two',
@@ -151,7 +154,6 @@ describe('session model migration', () => {
     expect(result.changedSessions).toBe(7);
     expect(store.entries.openrouter).toMatchObject({
       sessionId: 'one',
-      sessionFile: 'one.jsonl',
       updatedAt: 1,
     });
     expect(store.entries.openrouter).not.toHaveProperty('providerOverride');
@@ -162,7 +164,7 @@ describe('session model migration', () => {
     expect(store.entries.openrouter).not.toHaveProperty('contextTokens');
     expect(store.entries.openrouter).not.toHaveProperty('contextBudgetStatus');
     expect(store.entries.openrouter).not.toHaveProperty(
-      'fallbackNoticeSelectedModel'
+      'fallbackNotice'
     );
     for (const key of [
       'openrouter',

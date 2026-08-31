@@ -1,7 +1,6 @@
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
 
-import { registerCronScopeRepair } from './src/cron-scope-repair.js';
 import { registerCronModelMigration } from './src/cron-model-migration.js';
 import { registerHostedCronTriggerGuard } from './src/cron-trigger-guard.js';
 import { registerProviderAuthRoutes } from './src/provider-auth-routes.js';
@@ -13,7 +12,6 @@ export function registerTlonHostingOpenClaw(api: OpenClawPluginApi): void {
   registerHostedCronTriggerGuard(api);
   registerSubscriptionProviderRuntimes(api);
   registerCronModelMigration(api);
-  registerCronScopeRepair(api);
   registerSessionModelMigration(api);
   registerProviderAuthRoutes(api);
   registerWorkspacePromptSync(api);

@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -119,6 +120,10 @@ Old boot instructions.
     await create({ cwd: payloadDir, file: archive, gzip: true }, ['SOUL.md']);
     const payload = await readFile(archive);
     vi.stubEnv('TLON_SHIP', 'sampel-palnet');
+    vi.stubEnv(
+      'TLAWN_PROMPTS_SHA256',
+      createHash('sha256').update(payload).digest('hex')
+    );
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response(payload, { status: 200 }))
@@ -133,5 +138,24 @@ Old boot instructions.
     expect(await readFile(join(workspaceDir, 'SOUL.md'), 'utf8')).toBe(
       'Ship: sampel-palnet\n'
     );
+  });
+
+  it('rejects a prompt archive whose digest does not match', async () => {
+    const root = await temporaryRoot();
+    const workspaceDir = join(root, 'workspace');
+    await mkdir(workspaceDir);
+    vi.stubEnv('TLAWN_PROMPTS_SHA256', '0'.repeat(64));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('untrusted', { status: 200 }))
+    );
+
+    await expect(
+      syncWorkspacePrompts({
+        workspaceDir,
+        config: {} as never,
+        logger: { info: vi.fn(), warn: vi.fn() },
+      })
+    ).rejects.toThrow('prompt archive SHA-256 digest mismatch');
   });
 });
