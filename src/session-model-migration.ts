@@ -6,7 +6,7 @@ import {
 import type {
   OpenClawPluginApi,
   OpenClawPluginServiceContext,
-} from 'openclaw/plugin-sdk/plugin-runtime';
+} from 'openclaw/plugin-sdk/core';
 
 type Logger = Pick<OpenClawPluginApi['logger'], 'info' | 'warn'>;
 type SessionStoreRuntime = {
@@ -30,9 +30,7 @@ const SESSION_MODEL_RUNTIME_FIELDS: ReadonlyArray<keyof SessionEntry> = [
   'model',
   'contextTokens',
   'contextBudgetStatus',
-  'fallbackNoticeSelectedModel',
-  'fallbackNoticeActiveModel',
-  'fallbackNoticeReason',
+  'fallbackNotice',
   'liveModelSwitchPending',
 ];
 
@@ -42,6 +40,7 @@ const SESSION_MODEL_OVERRIDE_FIELDS: ReadonlyArray<keyof SessionEntry> = [
   'modelOverrideSource',
   'modelOverrideFallbackOriginProvider',
   'modelOverrideFallbackOriginModel',
+  'modelOverrideRouteResolution',
 ];
 
 const SESSION_AUTH_PROFILE_OVERRIDE_FIELDS: ReadonlyArray<keyof SessionEntry> = [

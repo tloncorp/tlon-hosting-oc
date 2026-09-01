@@ -8,6 +8,7 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
@@ -30,6 +31,7 @@ const HEARTBEAT_MARKER_PREFIX =
 const BOOT_PROMPT_NAME = 'BOOT.md';
 const BOOT_MARKER_PREFIX = '<!-- idempotency-marker:tlon-boot:';
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 type Logger = {
   info(message: string): void;
@@ -393,6 +395,12 @@ export async function syncWorkspacePrompts(params: {
   logger: Logger;
 }): Promise<void> {
   const url = promptArchiveUrl();
+  const expectedDigest = envValue('TLAWN_PROMPTS_SHA256')?.toLowerCase();
+  if (!expectedDigest || !SHA256_PATTERN.test(expectedDigest)) {
+    throw new Error(
+      'TLAWN_PROMPTS_SHA256 must be a 64-character hexadecimal SHA-256 digest'
+    );
+  }
   params.logger.info(`fetching prompts from ${url}`);
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'tlon-hosting-prompts-'));
   try {
@@ -404,7 +412,12 @@ export async function syncWorkspacePrompts(params: {
     if (!response.ok) {
       throw new Error(`prompt download returned HTTP ${response.status}`);
     }
-    await writeFile(archive, Buffer.from(await response.arrayBuffer()));
+    const payload = Buffer.from(await response.arrayBuffer());
+    const actualDigest = createHash('sha256').update(payload).digest('hex');
+    if (actualDigest !== expectedDigest) {
+      throw new Error('prompt archive SHA-256 digest mismatch');
+    }
+    await writeFile(archive, payload);
     await mkdir(extracted);
     await extract({
       file: archive,

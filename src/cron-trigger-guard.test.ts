@@ -1,20 +1,15 @@
-import type {
-  OpenClawPluginApi,
-  PluginHookBeforeToolCallEvent,
-  PluginHookBeforeToolCallResult,
-  PluginHookToolContext,
-} from 'openclaw/plugin-sdk/plugin-runtime';
+import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
 import { describe, expect, it, vi } from 'vitest';
 
 import { registerHostedCronTriggerGuard } from './cron-trigger-guard.js';
 
 type BeforeToolCallHandler = (
-  event: PluginHookBeforeToolCallEvent,
-  ctx: PluginHookToolContext
+  event: { toolName: string; params: Record<string, unknown> },
+  ctx: { toolName: string; runId: string; sessionKey: string }
 ) =>
-  | PluginHookBeforeToolCallResult
+  | { block: true; blockReason: string }
   | void
-  | Promise<PluginHookBeforeToolCallResult | void>;
+  | Promise<{ block: true; blockReason: string } | void>;
 
 function registerGuard(
   config: OpenClawPluginApi['config'] = {},

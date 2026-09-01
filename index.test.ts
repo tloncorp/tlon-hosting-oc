@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   registerCronGuard,
   registerCronMigration,
-  registerCronRepair,
   registerPromptSync,
   registerRoutes,
   registerRuntimes,
@@ -11,7 +10,6 @@ const {
 } = vi.hoisted(() => ({
     registerCronGuard: vi.fn(),
     registerCronMigration: vi.fn(),
-    registerCronRepair: vi.fn(),
     registerPromptSync: vi.fn(),
     registerRoutes: vi.fn(),
     registerRuntimes: vi.fn(),
@@ -20,9 +18,6 @@ const {
 
 vi.mock('./src/cron-model-migration.js', () => ({
   registerCronModelMigration: registerCronMigration,
-}));
-vi.mock('./src/cron-scope-repair.js', () => ({
-  registerCronScopeRepair: registerCronRepair,
 }));
 vi.mock('./src/cron-trigger-guard.js', () => ({
   registerHostedCronTriggerGuard: registerCronGuard,
@@ -53,7 +48,6 @@ describe('tlon-hosting-oc plugin', () => {
     expect(registerCronGuard).toHaveBeenCalledWith(api);
     expect(registerRuntimes).toHaveBeenCalledWith(api);
     expect(registerCronMigration).toHaveBeenCalledWith(api);
-    expect(registerCronRepair).toHaveBeenCalledWith(api);
     expect(registerSessionMigration).toHaveBeenCalledWith(api);
     expect(registerRoutes).toHaveBeenCalledWith(api);
     expect(registerPromptSync).toHaveBeenCalledWith(api);
