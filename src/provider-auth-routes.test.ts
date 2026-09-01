@@ -23,10 +23,11 @@ describe('disconnectProviderAuth', () => {
     await expect(disconnectProviderAuth(api, 'openai')).resolves.toEqual([
       'openai:codex-cli',
     ]);
-    expect(request).toHaveBeenCalledWith('models.authLogout', {
-      provider: 'openai',
-      agentId: 'main',
-    });
+    expect(request).toHaveBeenCalledWith(
+      'models.authLogout',
+      { provider: 'openai', agentId: 'main' },
+      { scopes: ['operator.admin'] }
+    );
   });
 
   it('rejects a malformed gateway response', async () => {

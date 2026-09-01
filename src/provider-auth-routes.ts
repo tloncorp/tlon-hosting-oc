@@ -723,10 +723,11 @@ export async function disconnectProviderAuth(
   api: OpenClawPluginApi,
   provider: ProviderId
 ): Promise<string[]> {
-  const result = await api.runtime.gateway.request('models.authLogout', {
-    provider,
-    agentId: 'main',
-  });
+  const result = await api.runtime.gateway.request(
+    'models.authLogout',
+    { provider, agentId: 'main' },
+    { scopes: ['operator.admin'] }
+  );
   if (!result || typeof result !== 'object') {
     throw new Error('OpenClaw returned an invalid provider logout response');
   }
