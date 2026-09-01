@@ -10,7 +10,6 @@ import {
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
 import {
-  removeProviderAuthProfilesWithLock,
   updateAuthProfileStoreWithLock,
   validateAnthropicSetupToken,
 } from 'openclaw/plugin-sdk/provider-auth';
@@ -720,6 +719,28 @@ async function refreshGatewayAuthState(api: OpenClawPluginApi) {
   }
 }
 
+export async function disconnectProviderAuth(
+  api: OpenClawPluginApi,
+  provider: ProviderId
+): Promise<string[]> {
+  const result = await api.runtime.gateway.request('models.authLogout', {
+    provider,
+    agentId: 'main',
+  });
+  if (!result || typeof result !== 'object') {
+    throw new Error('OpenClaw returned an invalid provider logout response');
+  }
+  const removedProfiles = (result as { removedProfiles?: unknown })
+    .removedProfiles;
+  if (
+    !Array.isArray(removedProfiles) ||
+    !removedProfiles.every((profileId) => typeof profileId === 'string')
+  ) {
+    throw new Error('OpenClaw returned an invalid provider logout response');
+  }
+  return removedProfiles;
+}
+
 async function loadOpenAISubscriptionModels(
   api: OpenClawPluginApi
 ): Promise<SubscriptionModel[]> {
@@ -1058,23 +1079,7 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
             });
             return;
           }
-          const cfg = api.runtime.config.current() as OpenClawConfig;
-          const agentDir = resolveDefaultAgentDir(cfg);
-          const store = ensureAuthProfileStore(agentDir, {
-            allowKeychainPrompt: false,
-            config: cfg,
-          });
-          const removedProfiles = listProfilesForProvider(store, provider);
-          const updated = await removeProviderAuthProfilesWithLock({
-            provider,
-            agentDir,
-          });
-          if (!updated) {
-            throw new Error(
-              'Failed to update the auth profile store; please try again'
-            );
-          }
-          await refreshGatewayAuthState(api);
+          const removedProfiles = await disconnectProviderAuth(api, provider);
           writeJson(res, 200, { provider, removedProfiles });
           return;
         }
