@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  disconnectProviderAuth,
   extractOpenAICodexModels,
   extractSubscriptionModels,
   extractXaiOAuthModels,
@@ -9,6 +10,35 @@ import {
   parseDeviceCodeVerificationMessage,
   parseOpenAIVerificationMessage,
 } from './provider-auth-routes.js';
+
+describe('disconnectProviderAuth', () => {
+  it('delegates logout to the gateway so adopted profiles are removed from every owner store', async () => {
+    const request = vi.fn(async () => ({
+      provider: 'openai',
+      removedProfiles: ['openai:codex-cli'],
+      abortedRunIds: [],
+    }));
+    const api = { runtime: { gateway: { request } } } as never;
+
+    await expect(disconnectProviderAuth(api, 'openai')).resolves.toEqual([
+      'openai:codex-cli',
+    ]);
+    expect(request).toHaveBeenCalledWith('models.authLogout', {
+      provider: 'openai',
+      agentId: 'main',
+    });
+  });
+
+  it('rejects a malformed gateway response', async () => {
+    const api = {
+      runtime: { gateway: { request: vi.fn(async () => ({})) } },
+    } as never;
+
+    await expect(disconnectProviderAuth(api, 'anthropic')).rejects.toThrow(
+      'invalid provider logout response'
+    );
+  });
+});
 
 describe('extractSubscriptionModels', () => {
   it('keeps available subscription-compatible models separate by provider', () => {
