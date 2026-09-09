@@ -1,0 +1,98 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "name": "Tlon Hosting Turn Outcomes",
+      "folder": "Tlonbot Observability",
+      "interval": "1m",
+      "rules": [
+        {
+          "uid": "tlon-hosting-turn-failure",
+          "title": "Tlonbot unsuccessful user turn",
+          "condition": "C",
+          "for": "0s",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "isPaused": false,
+          "labels": {
+            "alert_type": "tlonbot_turn_failure",
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "Unsuccessful user turn on ~{{ $labels.ship }}",
+            "description": "Hosting classified a terminal turn as {{ $labels.reason }} in {{ $labels.cluster }}. Inspect tlon.hosting.turn.outcome and the original tlon.agent_turn.terminal event.",
+            "tlonbot_inline": "[\"Tlonbot turn failed on \",{\"ship\":\"~{{ $labels.ship }}\"},\" ({{ $labels.reason }}).\"]"
+          },
+          "notification_settings": {
+            "receiver": "tlonbot-alert-channel",
+            "group_by": [
+              "grafana_folder",
+              "alertname",
+              "ship",
+              "reason"
+            ],
+            "repeat_interval": "1h"
+          },
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "bdtg19yurjapsa",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "model": {
+                "refId": "A",
+                "datasource": {
+                  "type": "loki",
+                  "uid": "bdtg19yurjapsa"
+                },
+                "expr": "sum by (ship, owner_ship, cluster, reason) (\n  count_over_time(\n    {service_name=\"openclaw-gateway\", exporter=\"OTLP\"}\n    |= \"tlon.hosting.turn.outcome\"\n    | json outcome=\"attributes[\\\"openclaw.tlon.hosting.turn.outcome\\\"]\", reason=\"attributes[\\\"openclaw.tlon.hosting.turn.reason\\\"]\", turn_ship=\"attributes[\\\"openclaw.tlon.hosting.turn.ship\\\"]\"\n    | __error__=\"\"\n    | outcome=\"failure\"\n    | label_format ship=\"{{.turn_ship}}\"\n    | ship!=\"\"\n    [5m]\n  )\n)",
+                "queryType": "instant",
+                "editorMode": "code",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "reducer": {
+                      "type": "last"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "type": "query"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

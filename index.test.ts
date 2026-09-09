@@ -8,6 +8,7 @@ const {
   registerRoutes,
   registerRuntimes,
   registerSessionMigration,
+  registerTurnOutcomes,
 } = vi.hoisted(() => ({
     registerCronGuard: vi.fn(),
     registerCronMigration: vi.fn(),
@@ -16,10 +17,14 @@ const {
     registerRoutes: vi.fn(),
     registerRuntimes: vi.fn(),
     registerSessionMigration: vi.fn(),
+    registerTurnOutcomes: vi.fn(),
   }));
 
 vi.mock('./src/cron-model-migration.js', () => ({
   registerCronModelMigration: registerCronMigration,
+}));
+vi.mock('./src/turn-outcomes.js', () => ({
+  registerHostedTurnOutcomes: registerTurnOutcomes,
 }));
 vi.mock('./src/cron-scope-repair.js', () => ({
   registerCronScopeRepair: registerCronRepair,
@@ -49,6 +54,7 @@ describe('tlon-hosting-oc plugin', () => {
     const api = {} as never;
 
     registerTlonHostingOpenClaw(api);
+    expect(registerTurnOutcomes).toHaveBeenCalledWith(api);
 
     expect(registerCronGuard).toHaveBeenCalledWith(api);
     expect(registerRuntimes).toHaveBeenCalledWith(api);
