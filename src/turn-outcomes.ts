@@ -1,56 +1,60 @@
+import { metrics, type Counter, type MeterProvider } from '@opentelemetry/api';
 import { onInternalDiagnosticEvent } from 'openclaw/plugin-sdk/diagnostic-runtime';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
 import { createSubsystemLogger } from 'openclaw/plugin-sdk/runtime-env';
 
 type Attributes = Record<string, string | number | boolean>;
-type Outcome = { outcome: 'success' | 'failure' | 'ignored' | 'unknown'; reason: string };
+type Outcome = { outcome: 'success' | 'failure' | 'unknown'; reason: string };
 
 function field(attributes: Attributes, name: string): string {
   // Core normalizes structured logger keys before publishing diagnostic events.
   const value = attributes[`openclaw.tlon.turn.${name}`] ?? attributes[`tlon.turn.${name}`];
-  return typeof value === 'string' ? value : '';
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
 }
 
-/** Hosting policy; execution=completed alone is deliberately not a success signal. */
+/** Matches the dashboard's Broken / Healthy / Needs attention classification. */
 export function classifyTurnOutcome(attributes: Attributes): Outcome {
   const execution = field(attributes, 'execution');
   const result = field(attributes, 'result');
   const delivery = field(attributes, 'delivery');
-  const trigger = field(attributes, 'trigger');
-  if (execution === 'cancelled') return { outcome: 'ignored', reason: 'cancelled' };
-  if (['failed', 'timed_out', 'abandoned'].includes(execution)) {
+  const finalErrorReplies = field(attributes, 'final_error_reply_count');
+  if (['failed', 'timed_out', 'cancelled', 'abandoned'].includes(execution)) {
     return { outcome: 'failure', reason: execution };
   }
-  if (execution !== 'completed') return { outcome: 'unknown', reason: 'unknown_execution' };
   if (result === 'error_reply' || result === 'error_reply_and_action') {
     return { outcome: 'failure', reason: 'error_reply' };
   }
   if (delivery === 'failed' || delivery === 'partial') {
     return { outcome: 'failure', reason: `delivery_${delivery}` };
   }
-  if (result === 'intentional_silence') {
-    return { outcome: 'ignored', reason: 'intentional_silence' };
-  }
-  if (result === 'empty') {
-    return trigger === 'dm' || trigger === 'mention'
-      ? { outcome: 'failure', reason: 'unexpected_empty' }
-      : { outcome: 'ignored', reason: 'empty_background_turn' };
-  }
-  if (result === 'action_only') return { outcome: 'success', reason: 'action_only' };
-  if (result === 'reply' || result === 'reply_and_action') {
-    if (delivery === 'delivered') return { outcome: 'success', reason: result };
-    // Core's message-tool-only suppression does not prove delivery. Keep it
-    // visible as unknown rather than page on an intentional delivery policy.
-    if (field(attributes, 'reason') === 'source_reply_delivery_mode_message_tool_only') {
-      return { outcome: 'unknown', reason: 'message_tool_delivery_unverified' };
-    }
+  if (field(attributes, 'reason') === 'reply_not_delivered') {
     return { outcome: 'failure', reason: 'reply_not_delivered' };
   }
-  return { outcome: 'unknown', reason: 'unknown_result' };
+  // Match LogQL's string comparison, including numeric attributes rendered as strings.
+  if (finalErrorReplies !== '' && finalErrorReplies !== '0') {
+    return { outcome: 'failure', reason: 'final_error_reply' };
+  }
+  if (['reply', 'reply_and_action', 'action_only', 'intentional_silence'].includes(result)) {
+    return { outcome: 'success', reason: result };
+  }
+  return { outcome: 'unknown', reason: 'needs_attention' };
 }
 
 export function registerHostedTurnOutcomes(api: Pick<OpenClawPluginApi, 'registerService'>): void {
   let unsubscribe: (() => void) | undefined;
+  let activeProvider: MeterProvider | undefined;
+  let counter: Counter | undefined;
+  const recordOutcome = (classification: Outcome, ship: string) => {
+    const provider = metrics.getMeterProvider();
+    if (provider !== activeProvider || !counter) {
+      counter = provider.getMeter('tlon.hosting').createCounter('openclaw.turn.outcomes', {
+        description: 'Terminal turn health using the Grafana dashboard classification',
+        unit: '1',
+      });
+      activeProvider = provider;
+    }
+    counter.add(1, { ship, outcome: classification.outcome, reason: classification.reason });
+  };
   const logger = createSubsystemLogger('tlon-hosting/turn-outcomes');
   api.registerService({
     id: 'tlon-hosting-turn-outcomes',
@@ -63,10 +67,12 @@ export function registerHostedTurnOutcomes(api: Pick<OpenClawPluginApi, 'registe
         const ship = field(attributes, 'ship');
         if (!runId || !ship) return;
         const classification = classifyTurnOutcome(attributes);
+        // Telemetry failure must not interfere with the derived log or the turn.
+        try { recordOutcome(classification, ship); } catch { /* best-effort metrics */ }
         // An allowlist prevents copying conversation content or provider errors.
         // A separate event preserves the channel plugin's execution semantics.
         const meta: Record<string, unknown> = {
-          'tlon.hosting.turn.schema_version': 1,
+          'tlon.hosting.turn.schema_version': 2,
           'tlon.hosting.turn.outcome': classification.outcome,
           'tlon.hosting.turn.reason': classification.reason,
           'tlon.hosting.turn.run_id': runId,

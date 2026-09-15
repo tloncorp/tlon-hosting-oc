@@ -22,21 +22,31 @@ This package does not contain the Tlon Messenger channel plugin.
 The gateway service observes the channel plugin's `tlon.agent_turn.terminal`
 diagnostic log records and emits `tlon.hosting.turn.outcome`. The original
 `execution` field describes dispatch completion, not user success, and is left
-unchanged. Hosting classifies the combined execution, result, delivery, and
-trigger fields:
+unchanged. The classification matches the existing Grafana terminal-turn query,
+with Broken mapped to `failure`, Healthy to `success`, and Needs attention to
+`unknown`. Failure conditions take precedence over healthy results.
 
 | Outcome | Cases |
 | --- | --- |
-| `failure` | Failed, timed-out, or abandoned dispatch; error reply; failed/partial delivery; undelivered reply; empty DM or explicit mention |
-| `ignored` | Cancelled dispatch, intentional silence, empty background turn (including owner-listen, owner-blob, cron) |
-| `success` | Delivered normal reply, delivered reply plus actions, or action-only result |
-| `unknown` | Unrecognized execution/result, or message-tool-only delivery without confirmation |
+| `failure` | Failed, timed-out, cancelled, or abandoned execution; error-reply result; failed/partial delivery; reason `reply_not_delivered`; nonempty final error-reply count other than `0` |
+| `success` | Reply, reply plus actions, action-only, or intentional silence, with none of the failure conditions |
+| `unknown` | All remaining cases, including empty DM, mention, and background turns |
+
+Skipped delivery alone is not a failure; it must meet one of the conditions
+above. Healthy results do not require `execution=completed`.
+
+The same classification is exported as the OpenTelemetry counter
+`openclaw.turn.outcomes` (`openclaw_turn_outcomes_total` in Prometheus),
+with `ship`, `outcome`, and normalized `reason` labels. The host must configure
+the OpenTelemetry metric provider/exporter; Alloy supplies owner and cluster
+identity. The counter avoids parsing Loki logs while retaining the final
+error-reply-count check, which the original native turn counter cannot express.
 
 Action-only is the channel recorder's classification; it does not prove every
 tool succeeded. This policy does not retry turns, change model selection, or
 send additional messages. Retries can duplicate tool side effects.
 
-The derived event includes schema version, outcome, reason, run ID, ship,
+The derived event includes schema version 2, outcome, reason, run ID, ship,
 trigger, execution, result, and delivery. It excludes session keys and message
 content. Core diagnostic events and log export must be enabled. No events means
 no coverage, not proof of health; this observer cannot detect a turn which
@@ -55,14 +65,21 @@ event query; query errors remain errors.
 1. Build and deploy the hosting plugin to a canary gateway, then restart it.
 2. Confirm `tlon.hosting.turn.outcome` appears beside terminal records in Loki
    (OTLP prefixes the structured keys with `openclaw.`). Inspect success and
-   ignored outcomes too; do not use absence of failures as a rollout check.
+   unknown outcomes too; do not use absence of failures as a rollout check.
 3. Review/import the provisioning document, then expand the plugin rollout.
    It adds a rule rather than replacing the existing compaction/billing rules.
 4. For a failure, correlate the derived event's run ID with the original turn
-   and ContextLens logs before attempting recovery. An empty explicit mention
-   warrants investigation; the classifier cannot infer conversational intent.
+   and ContextLens logs before attempting recovery.
 
 Local validation: the classifier and diagnostic subscription are exercised by
 `src/turn-outcomes.test.ts`. The rule's LogQL was accepted by production Loki
 before rollout; no derived events were expected yet. Production rule import
 and canary notification delivery still need verification during deployment.
+
+For the `mass-modules` Prometheus alert, deploy this plugin version first and
+verify `openclaw_turn_outcomes_total` is present for the canary. Then roll out
+the updated Alloy filter and `OpenClawTurnFailed` rule. Gateways running the old
+plugin do not emit this counter and will not be covered by that rule. Use the
+Prometheus alert or the standalone Grafana example, not both for the same bots.
+The five-minute counter estimate includes initial samples, so rollout or a
+telemetry gap can briefly recount historical failures.

@@ -16,7 +16,7 @@
           "execErrState": "Error",
           "isPaused": false,
           "labels": {
-            "alert_type": "tlonbot_turn_failure",
+            "alert_type": "openclaw_turn_failure",
             "severity": "warning"
           },
           "annotations": {
