@@ -18,7 +18,8 @@ type CronListResult = {
 };
 type GatewayRequest = (
   method: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  options?: { scopes?: 'operator.admin'[] }
 ) => Promise<unknown>;
 
 async function listCronJobs(request: GatewayRequest): Promise<CronJob[]> {
@@ -56,16 +57,21 @@ export async function migrateCurrentCronModels(params: {
     ) {
       continue;
     }
-    await request('cron.update', {
-      id: job.id,
-      patch: {
-        payload: {
-          kind: 'agentTurn',
-          model: null,
-          fallbacks: null,
+    // cron.update requires operator.admin; plugin requests default to operator.write.
+    await request(
+      'cron.update',
+      {
+        id: job.id,
+        patch: {
+          payload: {
+            kind: 'agentTurn',
+            model: null,
+            fallbacks: null,
+          },
         },
       },
-    });
+      { scopes: ['operator.admin'] }
+    );
     changedJobs.push(job.id);
   }
 
@@ -86,8 +92,8 @@ export function registerCronModelMigration(api: OpenClawPluginApi): void {
       try {
         await migrateCurrentCronModels({
           logger: context.logger,
-          request: (method, params) =>
-            api.runtime.gateway.request(method, params),
+          request: (method, params, options) =>
+            api.runtime.gateway.request(method, params, options),
         });
       } catch (error) {
         context.logger.warn(
