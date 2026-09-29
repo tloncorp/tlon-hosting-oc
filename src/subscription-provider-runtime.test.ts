@@ -96,7 +96,7 @@ describe('registerSubscriptionProviderRuntimes', () => {
     );
   });
 
-  it('loads the OpenClaw 8.1 provider runtime hooks', () => {
+  it('loads the OpenClaw 9.4 provider runtime hooks', () => {
     const api = makeApi({
       plugins: { allow: ['tlon'] },
     });
