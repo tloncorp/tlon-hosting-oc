@@ -14,10 +14,6 @@ interpolates the ship-specific values, and idempotently updates the workspace.
 The service runs again after a gateway restart, replacing the prompt refresh
 previously owned by `tlawn.py`.
 
-Prompt archives must be authenticated by setting `TLAWN_PROMPTS_SHA256` to the
-archive's lowercase hexadecimal SHA-256 digest. A missing or mismatched digest
-causes prompt synchronization to fail closed without changing the workspace.
-
 This package does not contain the Tlon Messenger channel plugin.
 
 ## User-turn outcomes
