@@ -29,6 +29,11 @@ const HEARTBEAT_MARKER_PREFIX =
   '<!-- idempotency-marker:tlon-heartbeat:';
 const BOOT_PROMPT_NAME = 'BOOT.md';
 const BOOT_MARKER_PREFIX = '<!-- idempotency-marker:tlon-boot:';
+// Matches tlawn.py. MEMORY.md holds what the bot learned, so a refresh may only
+// replace our block: an unmarked file (the bot's write tool rewrites the whole
+// file) and other marker blocks are the bot's and the operator's to keep.
+const MEMORY_PROMPT_NAME = 'MEMORY.md';
+const MEMORY_MARKER_PREFIX = '<!-- idempotency-marker:tlon-runtime:';
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 
 type Logger = {
@@ -373,7 +378,9 @@ export async function upsertPromptFiles(params: {
         content,
         ...(name === BOOT_PROMPT_NAME.toUpperCase()
           ? { managedMarkerPrefix: BOOT_MARKER_PREFIX }
-          : {}),
+          : name === MEMORY_PROMPT_NAME.toUpperCase()
+            ? { managedMarkerPrefix: MEMORY_MARKER_PREFIX }
+            : {}),
       });
     }
   }
