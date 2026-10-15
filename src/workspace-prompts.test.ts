@@ -95,6 +95,66 @@ Old boot instructions.
     expect(boot.match(/idempotency-marker:tlon-boot:v2/g)).toHaveLength(1);
   });
 
+  // Mirrors tlonbot's test_memory_prompt_refresh_preserves_* (78fb4cd): this
+  // sync runs alone on OpenClaw's in-process restarts, so it has to keep
+  // learned memory as tlawn's does.
+  describe('MEMORY.md', () => {
+    async function refreshMemory(previous: string): Promise<string> {
+      const root = await temporaryRoot();
+      const sourceDir = join(root, 'source');
+      const workspaceDir = join(root, 'workspace');
+      await mkdir(sourceDir);
+      await mkdir(workspaceDir);
+      await writeFile(
+        join(sourceDir, 'MEMORY.md'),
+        `<!-- idempotency-marker:tlon-runtime:v4 -->
+Keep learned entries outside this managed block.
+<!-- /idempotency-marker -->
+`
+      );
+      await writeFile(join(workspaceDir, 'MEMORY.md'), previous);
+      const params = {
+        sourceDir,
+        workspaceDir,
+        config: {} as never,
+        logger: { info: vi.fn(), warn: vi.fn() },
+      };
+      await upsertPromptFiles(params);
+      const first = await readFile(join(workspaceDir, 'MEMORY.md'), 'utf8');
+      await upsertPromptFiles(params);
+      expect(await readFile(join(workspaceDir, 'MEMORY.md'), 'utf8')).toBe(first);
+      expect(first.match(/idempotency-marker:tlon-runtime:v4/g)).toHaveLength(1);
+      expect(first).toContain('Keep learned entries outside this managed block.');
+      return first;
+    }
+
+    it('keeps learned entries and operator blocks', async () => {
+      const memory = await refreshMemory(`# Learned preferences
+Owner-approved shared preference: use concise project summaries.
+
+<!-- idempotency-marker:tlon-runtime:v2 -->
+Context recall is handled by LCM.
+<!-- /idempotency-marker -->
+
+<!-- idempotency-marker:operator-memory:v1 -->
+Keep this independently managed note.
+<!-- /idempotency-marker -->
+`);
+      expect(memory).toContain('use concise project summaries.');
+      expect(memory).toContain('idempotency-marker:operator-memory:v1');
+      expect(memory).toContain('Keep this independently managed note.');
+      expect(memory).not.toContain('idempotency-marker:tlon-runtime:v2');
+      expect(memory).not.toContain('Context recall is handled by LCM.');
+    });
+
+    it('keeps a file the bot rewrote without the marker', async () => {
+      const memory = await refreshMemory(
+        '# Learned preferences\nOwner-approved shared preference: use concise project summaries.\n'
+      );
+      expect(memory).toContain('use concise project summaries.');
+    });
+  });
+
   it('registers an awaited gateway service', () => {
     const registerService = vi.fn();
 
