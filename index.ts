@@ -8,8 +8,10 @@ import { registerProviderAuthRoutes } from './src/provider-auth-routes.js';
 import { registerSessionModelMigration } from './src/session-model-migration.js';
 import { registerSubscriptionProviderRuntimes } from './src/subscription-provider-runtime.js';
 import { registerWorkspacePromptSync } from './src/workspace-prompts.js';
+import { registerHostedTurnOutcomes } from './src/turn-outcomes.js';
 
 export function registerTlonHostingOpenClaw(api: OpenClawPluginApi): void {
+  registerHostedTurnOutcomes(api);
   registerHostedCronTriggerGuard(api);
   registerSubscriptionProviderRuntimes(api);
   registerCronModelMigration(api);

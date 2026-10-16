@@ -45,7 +45,7 @@ function createSessionStore(initial: Record<string, SessionEntry>) {
 }
 
 describe('session model migration', () => {
-  it('clears retired session pins without disturbing session identity or premium models', async () => {
+  it('clears every session model pin without disturbing session identity', async () => {
     const store = createSessionStore({
       openrouter: {
         sessionId: 'one',
@@ -114,6 +114,25 @@ describe('session model migration', () => {
         providerOverride: 'anthropic',
         modelOverride: 'claude-opus-4-6',
         modelOverrideSource: 'user',
+        authProfileOverride: 'anthropic:custom',
+        authProfileOverrideSource: 'user',
+      },
+      xai: {
+        sessionId: 'four',
+        updatedAt: 7,
+        providerOverride: 'xai',
+        modelOverride: 'grok-4.6',
+        modelOverrideSource: 'user',
+        authProfileOverride: 'xai:custom',
+        authProfileOverrideSource: 'user',
+        modelProvider: 'xai',
+        model: 'grok-4.6',
+      },
+      inherited: {
+        sessionId: 'five',
+        updatedAt: 8,
+        modelProvider: 'openrouter',
+        model: 'openai/gpt-5.6-luna',
       },
     });
 
@@ -129,13 +148,11 @@ describe('session model migration', () => {
       sessionStore: store.runtime,
     });
 
-    expect(result.changedSessions).toBe(5);
+    expect(result.changedSessions).toBe(7);
     expect(store.entries.openrouter).toMatchObject({
       sessionId: 'one',
       sessionFile: 'one.jsonl',
       updatedAt: 1,
-      authProfileOverride: 'openrouter:custom',
-      authProfileOverrideSource: 'user',
     });
     expect(store.entries.openrouter).not.toHaveProperty('providerOverride');
     expect(store.entries.openrouter).not.toHaveProperty('modelOverride');
@@ -147,29 +164,32 @@ describe('session model migration', () => {
     expect(store.entries.openrouter).not.toHaveProperty(
       'fallbackNoticeSelectedModel'
     );
-    expect(store.entries.direct).toMatchObject({
-      sessionId: 'two',
-      updatedAt: 2,
-    });
-    expect(store.entries.direct).not.toHaveProperty('providerOverride');
-    expect(store.entries.direct).not.toHaveProperty('modelOverride');
-    expect(store.entries.direct).not.toHaveProperty('authProfileOverride');
-    expect(store.entries.direct).not.toHaveProperty(
-      'authProfileOverrideSource'
-    );
-    for (const key of ['m2.1', 'm2.5', 'm2.7']) {
+    for (const key of [
+      'openrouter',
+      'direct',
+      'm2.1',
+      'm2.5',
+      'm2.7',
+      'premium',
+      'xai',
+    ]) {
       expect(store.entries[key]).not.toHaveProperty('providerOverride');
       expect(store.entries[key]).not.toHaveProperty('modelOverride');
       expect(store.entries[key]).not.toHaveProperty('modelOverrideSource');
+      expect(store.entries[key]).not.toHaveProperty('authProfileOverride');
+      expect(store.entries[key]).not.toHaveProperty(
+        'authProfileOverrideSource'
+      );
     }
-    expect(store.entries.premium).toMatchObject({
-      providerOverride: 'anthropic',
-      modelOverride: 'claude-opus-4-6',
-      modelOverrideSource: 'user',
+    expect(store.entries.inherited).toMatchObject({
+      sessionId: 'five',
+      updatedAt: 8,
+      modelProvider: 'openrouter',
+      model: 'openai/gpt-5.6-luna',
     });
   });
 
-  it('clears Basic and stale automatic overrides while preserving current automatic state', async () => {
+  it('clears every automatic override regardless of its fallback origin', async () => {
     const store = createSessionStore({
       basic: {
         sessionId: 'basic',
@@ -223,8 +243,8 @@ describe('session model migration', () => {
       sessionStore: store.runtime,
     });
 
-    expect(result.changedSessions).toBe(3);
-    for (const key of ['basic', 'auto-m3', 'stale-auto']) {
+    expect(result.changedSessions).toBe(4);
+    for (const key of ['basic', 'auto-m3', 'stale-auto', 'current-auto']) {
       expect(store.entries[key]).not.toHaveProperty('providerOverride');
       expect(store.entries[key]).not.toHaveProperty('modelOverride');
       expect(store.entries[key]).not.toHaveProperty('modelOverrideSource');
@@ -237,13 +257,6 @@ describe('session model migration', () => {
     }
     expect(store.entries.basic).not.toHaveProperty('authProfileOverride');
     expect(store.entries['auto-m3']).not.toHaveProperty('authProfileOverride');
-    expect(store.entries['current-auto']).toMatchObject({
-      providerOverride: 'openrouter',
-      modelOverride: 'deepseek/deepseek-v4-flash',
-      modelOverrideSource: 'auto',
-      modelOverrideFallbackOriginProvider: 'openrouter',
-      modelOverrideFallbackOriginModel: 'example/next-default',
-    });
   });
 
   it('registers an awaited OpenClaw service', () => {

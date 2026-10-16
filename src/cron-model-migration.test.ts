@@ -1,11 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  LEGACY_HOSTED_CRON_MODEL,
   migrateCurrentCronModels,
   registerCronModelMigration,
 } from './cron-model-migration.js';
-import { configuredPrimaryModel } from './hosted-model-policy.js';
 
 type CronStoreFile = Awaited<
   ReturnType<
@@ -14,18 +12,7 @@ type CronStoreFile = Awaited<
 >;
 
 describe('cron model migration', () => {
-  it('reads string and object primary model configuration', () => {
-    expect(
-      configuredPrimaryModel({ agents: { defaults: { model: 'openai/gpt-5' } } })
-    ).toBe('openai/gpt-5');
-    expect(
-      configuredPrimaryModel({
-        agents: { defaults: { model: { primary: 'anthropic/claude' } } },
-      })
-    ).toBe('anthropic/claude');
-  });
-
-  it('migrates current SQLite-backed cron models through the OpenClaw store runtime', async () => {
+  it('unpins every current cron model through the OpenClaw store runtime', async () => {
     const sourceStore: CronStoreFile = {
       version: 1 as const,
       jobs: [
@@ -61,8 +48,23 @@ describe('cron model migration', () => {
           payload: {
             kind: 'agentTurn' as const,
             message: 'run',
-            model: LEGACY_HOSTED_CRON_MODEL,
-            fallbacks: [LEGACY_HOSTED_CRON_MODEL],
+            model: 'openrouter/minimax/minimax-m2.7',
+            fallbacks: ['openrouter/minimax/minimax-m2.7'],
+          },
+          state: {},
+        },
+        {
+          id: 'default-job',
+          name: 'Inherited default job',
+          enabled: true,
+          createdAtMs: 5,
+          updatedAtMs: 5,
+          schedule: { kind: 'every' as const, everyMs: 60_000 },
+          sessionTarget: 'isolated' as const,
+          wakeMode: 'now' as const,
+          payload: {
+            kind: 'agentTurn' as const,
+            message: 'run',
           },
           state: {},
         },
@@ -123,11 +125,11 @@ describe('cron model migration', () => {
       'm3-job',
       'legacy-default-job',
       'older-default-job',
+      'premium-job',
     ]);
     expect(persistedStore.jobs[0].payload).toEqual({
       kind: 'agentTurn',
       message: 'run',
-      fallbacks: ['anthropic/claude-opus-4-6'],
     });
     expect(persistedStore.jobs[1].payload).toEqual({
       kind: 'agentTurn',
@@ -140,8 +142,10 @@ describe('cron model migration', () => {
     expect(persistedStore.jobs[3].payload).toEqual({
       kind: 'agentTurn',
       message: 'run',
-      model: 'anthropic/claude-opus-4-6',
-      fallbacks: [],
+    });
+    expect(persistedStore.jobs[4].payload).toEqual({
+      kind: 'agentTurn',
+      message: 'run',
     });
   });
 

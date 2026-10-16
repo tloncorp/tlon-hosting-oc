@@ -12,6 +12,7 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist/",
+    "observability/",
     "openclaw.plugin.json",
     "README.md"
   ],
@@ -33,6 +34,7 @@
     "openclaw": ">=2026.7.1"
   },
   "dependencies": {
+    "@opentelemetry/api": "1.9.0",
     "tar": "7.5.16"
   },
   "openclaw": {
