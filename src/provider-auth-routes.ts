@@ -727,9 +727,11 @@ export async function disconnectProviderAuth(
   api: OpenClawPluginApi,
   provider: ProviderId
 ): Promise<string[]> {
+  // Omitting agentId lets the handler resolve the configured default agent
+  // instead of assuming it is named `main`.
   const result = await api.runtime.gateway.request(
     'models.authLogout',
-    { provider, agentId: 'main' },
+    { provider },
     { scopes: ['operator.admin'] }
   );
   if (!result || typeof result !== 'object') {

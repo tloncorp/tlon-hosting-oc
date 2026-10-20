@@ -25,7 +25,7 @@ describe('disconnectProviderAuth', () => {
     ]);
     expect(request).toHaveBeenCalledWith(
       'models.authLogout',
-      { provider: 'openai', agentId: 'main' },
+      { provider: 'openai' },
       { scopes: ['operator.admin'] }
     );
   });
