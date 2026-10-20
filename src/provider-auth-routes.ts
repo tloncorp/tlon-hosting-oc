@@ -646,6 +646,10 @@ async function runAnthropicFlow(
           provider: 'anthropic',
           token: normalizedToken,
         };
+        // Dropping the whole usage entry is broader than the old cooldown-only
+        // clear: it also lifts blockedUntil/blockedReason/blockedSource/
+        // blockedModel and lastUsed. That is intended, since a freshly entered
+        // credential should not inherit the previous token's blocks.
         if (current.usageStats) {
           delete current.usageStats[ANTHROPIC_PROFILE_ID];
         }

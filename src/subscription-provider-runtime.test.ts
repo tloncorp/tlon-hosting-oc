@@ -114,6 +114,11 @@ describe('registerSubscriptionProviderRuntimes', () => {
     expect(providerById.get('openai')?.resolveDynamicModel).toBeTypeOf(
       'function'
     );
+    // This direct call carries no providerConfig, so it shows the planner-less
+    // default (openai-responses on the platform URL). At runtime 9.33's auth
+    // planner picks the ChatGPT route for an OAuth-only profile and projects it
+    // into provider config before materialization; this test does not exercise
+    // that routing.
     expect(
       providerById.get('openai')?.resolveDynamicModel?.({
         provider: 'openai',
