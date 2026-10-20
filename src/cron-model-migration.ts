@@ -1,7 +1,5 @@
-import type {
-  OpenClawPluginApi,
-  OpenClawPluginServiceContext,
-} from 'openclaw/plugin-sdk/core';
+import type { OpenClawPluginServiceContext } from 'openclaw/plugin-sdk/core';
+import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
 
 type Logger = Pick<OpenClawPluginApi['logger'], 'info' | 'warn'>;
 type CronJob = {
