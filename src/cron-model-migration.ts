@@ -6,6 +6,7 @@ import type {
 type Logger = Pick<OpenClawPluginApi['logger'], 'info' | 'warn'>;
 type CronJob = {
   id: string;
+  description?: string;
   payload: {
     kind: string;
     model?: string;
@@ -16,6 +17,20 @@ type CronListResult = {
   jobs?: CronJob[];
   total?: number;
 };
+
+// Mirrors BUDGET_HOLD_PREFIX in tloncorp/tlon-apps
+// packages/openclaw/src/cron-budget-hold.ts. The credit-budget hold recognises
+// its own pause only while job.updatedAtMs still equals the hold's revision, and
+// any cron.update restamps updatedAtMs, so editing a held job here would orphan
+// the hold. Held jobs migrate on a later boot once the hold resumes them. The
+// hold writes `(prefix + description).trimEnd()`, so an empty original
+// description leaves the prefix without its trailing space.
+const BUDGET_HOLD_PREFIX = '[Paused: credit budget] ';
+
+function isBudgetHeld(job: CronJob): boolean {
+  return (job.description ?? '').startsWith(BUDGET_HOLD_PREFIX.trimEnd());
+}
+
 type GatewayRequest = (
   method: string,
   params: Record<string, unknown>,
@@ -53,7 +68,8 @@ export async function migrateCurrentCronModels(params: {
   for (const job of await listCronJobs(request)) {
     if (
       job.payload.kind !== 'agentTurn' ||
-      (job.payload.model === undefined && job.payload.fallbacks === undefined)
+      (job.payload.model === undefined && job.payload.fallbacks === undefined) ||
+      isBudgetHeld(job)
     ) {
       continue;
     }

@@ -64,6 +64,47 @@ describe('cron model migration', () => {
     );
   });
 
+  it('leaves budget-held jobs alone so the hold keeps recognising them', async () => {
+    const request = vi.fn(
+      async (method: string, _params: Record<string, unknown>) => {
+        if (method === 'cron.list') {
+          return {
+            jobs: [
+              {
+                id: 'held-job',
+                description: '[Paused: credit budget] Morning digest',
+                payload: { kind: 'agentTurn', model: 'openai/gpt-5' },
+              },
+              {
+                id: 'held-undescribed-job',
+                description: '[Paused: credit budget]',
+                payload: { kind: 'agentTurn', fallbacks: ['openai/gpt-5'] },
+              },
+              {
+                id: 'unheld-job',
+                description: 'Morning digest',
+                payload: { kind: 'agentTurn', model: 'openai/gpt-5' },
+              },
+            ],
+            total: 3,
+          };
+        }
+        return { ok: true };
+      }
+    );
+
+    const result = await migrateCurrentCronModels({
+      logger: { info: vi.fn(), warn: vi.fn() },
+      request,
+    });
+
+    expect(result.changedJobs).toEqual(['unheld-job']);
+    const updatedIds = request.mock.calls
+      .filter(([method]) => method === 'cron.update')
+      .map(([, params]) => params.id);
+    expect(updatedIds).toEqual(['unheld-job']);
+  });
+
   it('requests operator.admin for cron.update through the gateway runtime', async () => {
     const gatewayRequest = vi.fn(async (method: string) => {
       if (method === 'cron.list') {
