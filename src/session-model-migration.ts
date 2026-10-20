@@ -29,6 +29,9 @@ const SESSION_MODEL_RUNTIME_FIELDS: ReadonlyArray<keyof SessionEntry> = [
   'modelProvider',
   'model',
   'contextTokens',
+  // Cache marker paired with contextTokens; it describes the cleared value, so
+  // it goes with it.
+  'contextTokensSource',
   'contextBudgetStatus',
   'fallbackNotice',
   'liveModelSwitchPending',
@@ -41,6 +44,10 @@ const SESSION_MODEL_OVERRIDE_FIELDS: ReadonlyArray<keyof SessionEntry> = [
   'modelOverrideFallbackOriginProvider',
   'modelOverrideFallbackOriginModel',
   'modelOverrideRouteResolution',
+  // One-run rollback guard from the agent sessions tool. Left in place it
+  // restores its prev* model/auth selection on the next turn, re-pinning the
+  // session.
+  'modelFallback',
 ];
 
 const SESSION_AUTH_PROFILE_OVERRIDE_FIELDS: ReadonlyArray<keyof SessionEntry> = [
