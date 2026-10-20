@@ -5,11 +5,16 @@ OpenClaw plugin for Tlon's hosted OpenClaw control plane.
 It exposes the gateway-authenticated `/tlon/provider-auth/*` routes used by
 Pioneer and registers OpenClaw's bundled OpenAI and Anthropic provider
 runtimes when Tlon's managed plugin allowlist would otherwise omit them.
-It also repairs cron-requested `operator.admin` device scopes at gateway
-startup and removes hosted cron and persisted session model pins so they always
-inherit their effective configured defaults. Current cron and session updates
-go through OpenClaw's store runtimes instead of editing their backing stores
-directly; the OpenClaw doctor remains responsible for storage-format migrations.
+It also removes hosted cron and persisted session model pins so they always
+inherit their effective configured defaults. Cron changes go through the gateway
+API, session changes go through OpenClaw's SQLite-backed session row API, and
+OpenClaw remains responsible for storage-format and approval migrations.
+Install the plugin as a bundled extension (`dist/extensions/`): its gateway
+requests, including the cron migration and provider logout, go through
+`dispatchTrustedPluginGatewayMethod`, which refuses plugins that are neither
+bundled nor trusted official installs, so a checkout loaded from a path or an
+`openclaw plugins install <tgz>` logs `Failed to migrate current cron models`
+on every boot and fails `DELETE /tlon/provider-auth/provider`.
 At gateway service startup it also downloads Tlon's managed workspace prompts,
 interpolates the ship-specific values, and idempotently updates the workspace.
 The service runs again after a gateway restart, replacing the prompt refresh

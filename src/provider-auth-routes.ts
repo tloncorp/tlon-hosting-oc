@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
-  clearAuthProfileCooldown,
   clearRuntimeAuthProfileStoreSnapshots,
   ensureAuthProfileStore,
   listProfilesForProvider,
@@ -10,16 +9,10 @@ import {
 } from 'openclaw/plugin-sdk/agent-runtime';
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
-import { fetchLiveProviderModelRows } from 'openclaw/plugin-sdk/provider-catalog-live-runtime';
 import {
-  removeProviderAuthProfilesWithLock,
-  upsertAuthProfileWithLock,
+  updateAuthProfileStoreWithLock,
   validateAnthropicSetupToken,
 } from 'openclaw/plugin-sdk/provider-auth';
-import {
-  type ModelsAuthLoginFlowOptions,
-  runModelsAuthLoginFlow,
-} from 'openclaw/plugin-sdk/provider-auth-login-flow-runtime';
 
 export const PROVIDER_AUTH_ROUTE = '/tlon/provider-auth';
 
@@ -77,7 +70,68 @@ type SubscriptionModel = {
 type SubscriptionModelCatalog = Partial<
   Record<ProviderId, SubscriptionModel[]>
 >;
-type LiveProviderModelRowsLoader = typeof fetchLiveProviderModelRows;
+type LiveProviderModelRowsLoader = (params: {
+  providerId: string;
+  endpoint: string;
+  discoveryApiKey: string;
+  timeoutMs: number;
+  auditContext: string;
+}) => Promise<unknown>;
+
+type ProviderLoginPrompter = {
+  intro: () => Promise<void>;
+  outro: () => Promise<void>;
+  note: (message: string, title?: string) => Promise<void>;
+  plain: (message: string) => Promise<void>;
+  select: (...args: unknown[]) => Promise<never>;
+  multiselect: (...args: unknown[]) => Promise<never>;
+  text: (params: {
+    validate?: (value: string) => string | undefined;
+  }) => Promise<string>;
+  confirm: (...args: unknown[]) => Promise<never>;
+  progress: () => {
+    update: (...args: unknown[]) => void;
+    stop: (...args: unknown[]) => void;
+  };
+};
+
+type ModelsAuthLoginFlowOptions = {
+  provider: string;
+  method: string;
+  agent: string;
+  runtime: ReturnType<typeof createRuntime>;
+  prompter: ProviderLoginPrompter;
+  isRemote: boolean;
+  openUrl: (url: string) => Promise<void>;
+};
+
+async function runModelsAuthLoginFlow(
+  options: ModelsAuthLoginFlowOptions
+): Promise<unknown> {
+  // OpenClaw does not yet expose its programmatic provider login coordinator
+  // as a typed public SDK surface. Keep this compatibility seam isolated so a
+  // missing runtime produces a normal flow error instead of blocking startup.
+  const runtimeId = 'openclaw/plugin-sdk/provider-auth-login-flow-runtime';
+  const runtime = (await import(runtimeId)) as {
+    runModelsAuthLoginFlow: (
+      params: ModelsAuthLoginFlowOptions
+    ) => Promise<unknown>;
+  };
+  return await runtime.runModelsAuthLoginFlow(options);
+}
+
+async function fetchLiveProviderModelRows(
+  params: Parameters<LiveProviderModelRowsLoader>[0]
+): Promise<unknown> {
+  // The SDK loader adds the SSRF guard, body-size cap, and pagination that a
+  // bare fetch lacks. 2026.9.33 ships this subpath without type declarations,
+  // so load it through the same untyped seam as the login flow runtime.
+  const runtimeId = 'openclaw/plugin-sdk/provider-catalog-live-runtime';
+  const runtime = (await import(runtimeId)) as {
+    fetchLiveProviderModelRows: LiveProviderModelRowsLoader;
+  };
+  return await runtime.fetchLiveProviderModelRows(params);
+}
 
 type OAuthSubscriptionModelAdapter = {
   providerId: DeviceCodeProviderId;
@@ -492,7 +546,7 @@ function unsupportedPrompt(): never {
 function createPrompter(params: {
   onNote?: (message: string, title?: string) => void;
   token?: string;
-}): ModelsAuthLoginFlowOptions['prompter'] {
+}): ProviderLoginPrompter {
   return {
     intro: async () => {},
     outro: async () => {},
@@ -549,7 +603,7 @@ async function runDeviceCodeFlow(
     await refreshGatewayAuthState(api);
     updateFlow(flowId, { status: 'complete' });
   } catch (error) {
-    // OpenClaw 7.1 persists the auth profile before applying the provider's
+    // OpenClaw persists the auth profile before applying the provider's
     // optional model-allowlist patch. Tlon's generated config is intentionally
     // root-managed, so that final write cannot acquire openclaw.json.lock.
     // The credential is already durable in the pier-backed auth store.
@@ -580,25 +634,34 @@ async function runAnthropicFlow(
 
     const cfg = api.runtime.config.current() as OpenClawConfig;
     const agentDir = resolveDefaultAgentDir(cfg);
-    const store = await upsertAuthProfileWithLock({
-      profileId: ANTHROPIC_PROFILE_ID,
-      credential: {
-        type: 'token',
-        provider: 'anthropic',
-        token: normalizedToken,
-      },
+    const store = await updateAuthProfileStoreWithLock({
       agentDir,
+      sharedStoreWrite: true,
+      saveOptions: {
+        filterExternalAuthProfiles: false,
+        syncExternalCli: false,
+      },
+      updater: (current) => {
+        current.profiles[ANTHROPIC_PROFILE_ID] = {
+          type: 'token',
+          provider: 'anthropic',
+          token: normalizedToken,
+        };
+        // Dropping the whole usage entry is broader than the old cooldown-only
+        // clear: it also lifts blockedUntil/blockedReason/blockedSource/
+        // blockedModel and lastUsed. That is intended, since a freshly entered
+        // credential should not inherit the previous token's blocks.
+        if (current.usageStats) {
+          delete current.usageStats[ANTHROPIC_PROFILE_ID];
+        }
+        return true;
+      },
     });
     if (!store) {
       throw new Error(
         'Failed to update the auth profile store; please try again'
       );
     }
-    await clearAuthProfileCooldown({
-      store,
-      profileId: ANTHROPIC_PROFILE_ID,
-      agentDir,
-    });
     await refreshGatewayAuthState(api);
     updateFlow(flowId, { status: 'complete' });
   } catch (error) {
@@ -659,6 +722,31 @@ async function refreshGatewayAuthState(api: OpenClawPluginApi) {
       `[tlon-hosting] Provider auth state refresh failed: ${errorMessage(error)}`
     );
   }
+}
+
+export async function disconnectProviderAuth(
+  api: OpenClawPluginApi,
+  provider: ProviderId
+): Promise<string[]> {
+  // Omitting agentId lets the handler resolve the configured default agent
+  // instead of assuming it is named `main`.
+  const result = await api.runtime.gateway.request(
+    'models.authLogout',
+    { provider },
+    { scopes: ['operator.admin'] }
+  );
+  if (!result || typeof result !== 'object') {
+    throw new Error('OpenClaw returned an invalid provider logout response');
+  }
+  const removedProfiles = (result as { removedProfiles?: unknown })
+    .removedProfiles;
+  if (
+    !Array.isArray(removedProfiles) ||
+    !removedProfiles.every((profileId) => typeof profileId === 'string')
+  ) {
+    throw new Error('OpenClaw returned an invalid provider logout response');
+  }
+  return removedProfiles;
 }
 
 async function loadOpenAISubscriptionModels(
@@ -999,23 +1087,7 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
             });
             return;
           }
-          const cfg = api.runtime.config.current() as OpenClawConfig;
-          const agentDir = resolveDefaultAgentDir(cfg);
-          const store = ensureAuthProfileStore(agentDir, {
-            allowKeychainPrompt: false,
-            config: cfg,
-          });
-          const removedProfiles = listProfilesForProvider(store, provider);
-          const updated = await removeProviderAuthProfilesWithLock({
-            provider,
-            agentDir,
-          });
-          if (!updated) {
-            throw new Error(
-              'Failed to update the auth profile store; please try again'
-            );
-          }
-          await refreshGatewayAuthState(api);
+          const removedProfiles = await disconnectProviderAuth(api, provider);
           writeJson(res, 200, { provider, removedProfiles });
           return;
         }
