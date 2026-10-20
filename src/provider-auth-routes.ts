@@ -120,6 +120,19 @@ async function runModelsAuthLoginFlow(
   return await runtime.runModelsAuthLoginFlow(options);
 }
 
+async function fetchLiveProviderModelRows(
+  params: Parameters<LiveProviderModelRowsLoader>[0]
+): Promise<unknown> {
+  // The SDK loader adds the SSRF guard, body-size cap, and pagination that a
+  // bare fetch lacks. 2026.9.33 ships this subpath without type declarations,
+  // so load it through the same untyped seam as the login flow runtime.
+  const runtimeId = 'openclaw/plugin-sdk/provider-catalog-live-runtime';
+  const runtime = (await import(runtimeId)) as {
+    fetchLiveProviderModelRows: LiveProviderModelRowsLoader;
+  };
+  return await runtime.fetchLiveProviderModelRows(params);
+}
+
 type OAuthSubscriptionModelAdapter = {
   providerId: DeviceCodeProviderId;
   displayName: string;
@@ -441,19 +454,7 @@ export function extractXaiOAuthModels(value: unknown): SubscriptionModel[] {
 
 export async function fetchXaiOAuthSubscriptionModels(
   discoveryApiKey: string,
-  loadRows: LiveProviderModelRowsLoader = async (params) => {
-    const response = await fetch(params.endpoint, {
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${params.discoveryApiKey}`,
-      },
-      signal: AbortSignal.timeout(params.timeoutMs),
-    });
-    if (!response.ok) {
-      throw new Error(`xAI model discovery returned HTTP ${response.status}`);
-    }
-    return await response.json();
-  }
+  loadRows: LiveProviderModelRowsLoader = fetchLiveProviderModelRows
 ): Promise<SubscriptionModel[]> {
   const rows = await loadRows({
     providerId: 'xai',
