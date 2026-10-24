@@ -278,23 +278,32 @@ async function upsertBlock(params: {
     // A missing destination starts with only the managed block.
   }
 
+  const fresh =
+    `${params.marker}\n${params.content.replace(/\n+$/, '')}\n${BLOCK_END}`;
   if (params.managedMarkerPrefix) {
-    text = text
-      // Consume the block's trailing newline so repeated multi-block refreshes
-      // do not leave another blank line behind each time a block moves.
-      .replace(
-        new RegExp(`${MARKER_PATTERN.source}\\n?`, MARKER_PATTERN.flags),
-        (block, marker: string) =>
-          marker.startsWith(params.managedMarkerPrefix!) ? '' : block
-      )
-      .replace(
-        new RegExp(
-          `${escapeRegExp(params.managedMarkerPrefix)}[^\\s]+ -->\\n?`,
-          'g'
-        ),
-        ''
-      )
-      .replace(/\n+$/, '');
+    const prefix = params.managedMarkerPrefix;
+    let replaced = false;
+    // Keep the first block in place so managed guidance stays ahead of owner
+    // notes and within the bootstrap budget. Drop duplicates and stray openers
+    // in the same pass so the fresh marker is not stripped again.
+    text = text.replace(
+      new RegExp(
+        `${MARKER_PATTERN.source}\\n?|${escapeRegExp(prefix)}[^\\s]+ -->\\n?`,
+        MARKER_PATTERN.flags
+      ),
+      (block, marker: string | undefined) => {
+        if (!marker) return '';
+        if (!marker.startsWith(prefix)) return block;
+        if (replaced) return '';
+        replaced = true;
+        return fresh + (block.endsWith('\n') ? '\n' : '');
+      }
+    );
+    if (replaced) {
+      await atomicWrite(params.path, text);
+      return;
+    }
+    text = text.replace(/\n+$/, '');
   } else if (!text.includes('<!-- idempotency-marker:')) {
     text = '';
   } else {
@@ -304,9 +313,7 @@ async function upsertBlock(params: {
       .replace(/\n+$/, '');
   }
 
-  const block =
-    `\n${params.marker}\n${params.content.replace(/\n+$/, '')}` +
-    `\n${BLOCK_END}\n`;
+  const block = `\n${fresh}\n`;
   await atomicWrite(params.path, `${text}${block}`.replace(/^\n+/, ''));
 }
 
