@@ -280,8 +280,12 @@ async function upsertBlock(params: {
 
   if (params.managedMarkerPrefix) {
     text = text
-      .replace(markerBlockPattern(), (block, marker: string) =>
-        marker.startsWith(params.managedMarkerPrefix!) ? '' : block
+      // Consume the block's trailing newline so repeated multi-block refreshes
+      // do not leave another blank line behind each time a block moves.
+      .replace(
+        new RegExp(`${MARKER_PATTERN.source}\\n?`, MARKER_PATTERN.flags),
+        (block, marker: string) =>
+          marker.startsWith(params.managedMarkerPrefix!) ? '' : block
       )
       .replace(
         new RegExp(
@@ -380,7 +384,16 @@ export async function upsertPromptFiles(params: {
           ? { managedMarkerPrefix: BOOT_MARKER_PREFIX }
           : name === MEMORY_PROMPT_NAME.toUpperCase()
             ? { managedMarkerPrefix: MEMORY_MARKER_PREFIX }
-            : {}),
+            : name === 'AGENTS.MD'
+              ? {
+                  // Match tlawn.py: AGENTS.md carries several independently
+                  // versioned families, so refreshing one must keep the others.
+                  managedMarkerPrefix: marker.slice(
+                    0,
+                    marker.lastIndexOf(':') + 1
+                  ),
+                }
+              : {}),
       });
     }
   }

@@ -30,6 +30,91 @@ afterEach(async () => {
 });
 
 describe('workspace prompt sync', () => {
+  const managedBlock = (family: string, version: number, content: string) =>
+    `<!-- idempotency-marker:${family}:v${version} -->\n${content}\n<!-- /idempotency-marker -->\n`;
+
+  it.each(['complete', 'heartbeat-only', 'unmarked'])(
+    'preserves all AGENTS.md block families across repeated refreshes (%s)',
+    async (state) => {
+      const root = await temporaryRoot();
+      const sourceDir = join(root, 'source');
+      const workspaceDir = join(root, 'workspace');
+      await mkdir(sourceDir);
+      await mkdir(workspaceDir);
+      const blocks = [
+        ['tlon-agents', 22, 'Agent instructions.'],
+        ['tlon-tools', 33, 'Tool instructions.'],
+        ['tlon-heartbeat-agents', 2, 'Heartbeat instructions.'],
+        ['tlon-future-guidance', 1, 'Additional guidance.'],
+      ] as const;
+      const bundle = blocks
+        .map(([family, version, content]) =>
+          managedBlock(family, version, content)
+        )
+        .join('\n');
+      const notes = '# Owner preferences\nKeep replies concise.\n';
+      const unrelated = managedBlock(
+        'operator-guidance',
+        1,
+        'Keep this independently managed instruction.'
+      );
+      // The entrypoint writes the complete bundle before the hosting service;
+      // older hosting syncs leave only the last block behind.
+      const initial =
+        state === 'complete'
+          ? bundle + unrelated + notes
+          : state === 'heartbeat-only'
+            ? managedBlock(
+                'tlon-heartbeat-agents',
+                2,
+                'Heartbeat instructions.'
+              ) +
+              unrelated +
+              notes
+            : notes;
+      await writeFile(join(sourceDir, 'AGENTS.md'), bundle);
+      const destination = join(workspaceDir, 'AGENTS.md');
+      await writeFile(destination, initial);
+      const params = {
+        sourceDir,
+        workspaceDir,
+        config: {} as never,
+        logger: { info: vi.fn(), warn: vi.fn() },
+      };
+
+      await upsertPromptFiles(params);
+      const first = await readFile(destination, 'utf8');
+      for (const [family, version, content] of blocks) {
+        expect(
+          first.split(managedBlock(family, version, content))
+        ).toHaveLength(2);
+      }
+      expect(first).toContain(notes);
+      if (state !== 'unmarked') expect(first).toContain(unrelated);
+      await upsertPromptFiles(params);
+      expect(await readFile(destination, 'utf8')).toBe(first);
+
+      // A version change replaces only its family, including stale duplicates.
+      await writeFile(
+        destination,
+        first + managedBlock('tlon-agents', 21, 'Stale duplicate.')
+      );
+      const updatedBundle = bundle.replace(
+        managedBlock('tlon-agents', 22, 'Agent instructions.'),
+        managedBlock('tlon-agents', 23, 'Updated agent instructions.')
+      );
+      await writeFile(join(sourceDir, 'AGENTS.md'), updatedBundle);
+      await upsertPromptFiles(params);
+      const updated = await readFile(destination, 'utf8');
+      expect(updated).toBe(
+        first.replace(
+          managedBlock('tlon-agents', 22, 'Agent instructions.'),
+          managedBlock('tlon-agents', 23, 'Updated agent instructions.')
+        )
+      );
+    }
+  );
+
   it('replaces managed prompt blocks idempotently and preserves operator text', async () => {
     const root = await temporaryRoot();
     const sourceDir = join(root, 'source');
