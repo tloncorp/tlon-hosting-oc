@@ -1,56 +1,95 @@
-import type {
-  OpenClawPluginApi,
-  OpenClawPluginServiceContext,
-} from 'openclaw/plugin-sdk/plugin-runtime';
-import {
-  loadCronStore,
-  resolveCronStorePath,
-  saveCronStore,
-} from 'openclaw/plugin-sdk/cron-store-runtime';
+import type { OpenClawPluginServiceContext } from 'openclaw/plugin-sdk/core';
+import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/plugin-runtime';
 
 type Logger = Pick<OpenClawPluginApi['logger'], 'info' | 'warn'>;
-type CronStoreFile = Awaited<ReturnType<typeof loadCronStore>>;
-type CronStoreRuntime = {
-  resolveCronStorePath: (storePath?: string) => string;
-  loadCronStore: (storePath: string) => Promise<CronStoreFile>;
-  saveCronStore: (storePath: string, store: CronStoreFile) => Promise<void>;
+type CronJob = {
+  id: string;
+  description?: string;
+  payload: {
+    kind: string;
+    model?: string;
+    fallbacks?: string[];
+  };
+};
+type CronListResult = {
+  jobs?: CronJob[];
+  total?: number;
 };
 
+// Mirrors BUDGET_HOLD_PREFIX in tloncorp/tlon-apps
+// packages/openclaw/src/cron-budget-hold.ts. The credit-budget hold recognises
+// its own pause only while job.updatedAtMs still equals the hold's revision, and
+// any cron.update restamps updatedAtMs, so editing a held job here would orphan
+// the hold. Held jobs migrate on a later boot once the hold resumes them. The
+// hold writes `(prefix + description).trimEnd()`, so an empty original
+// description leaves the prefix without its trailing space.
+const BUDGET_HOLD_PREFIX = '[Paused: credit budget] ';
+
+function isBudgetHeld(job: CronJob): boolean {
+  return (job.description ?? '').startsWith(BUDGET_HOLD_PREFIX.trimEnd());
+}
+
+type GatewayRequest = (
+  method: string,
+  params: Record<string, unknown>,
+  options?: { scopes?: 'operator.admin'[] }
+) => Promise<unknown>;
+
+async function listCronJobs(request: GatewayRequest): Promise<CronJob[]> {
+  const jobs: CronJob[] = [];
+  const limit = 200;
+  let offset = 0;
+
+  while (true) {
+    const page = (await request('cron.list', {
+      includeDisabled: true,
+      includeDeliveryPreviews: false,
+      limit,
+      offset,
+    })) as CronListResult;
+    const pageJobs = Array.isArray(page.jobs) ? page.jobs : [];
+    jobs.push(...pageJobs);
+    offset += pageJobs.length;
+    if (pageJobs.length === 0 || offset >= (page.total ?? offset)) {
+      return jobs;
+    }
+  }
+}
+
 export async function migrateCurrentCronModels(params: {
-  config: OpenClawPluginServiceContext['config'];
   logger: Logger;
-  cronStore?: CronStoreRuntime;
+  request: GatewayRequest;
 }): Promise<{ changedJobs: string[] }> {
-  const { config, logger } = params;
-  const cronStore: CronStoreRuntime = params.cronStore ?? {
-    resolveCronStorePath: storePath => resolveCronStorePath(storePath),
-    loadCronStore: storePath => loadCronStore(storePath),
-    saveCronStore: (storePath, store) => saveCronStore(storePath, store),
-  };
-  const storePath = cronStore.resolveCronStorePath(config.cron?.store);
-  const store = await cronStore.loadCronStore(storePath);
+  const { logger, request } = params;
   const changedJobs: string[] = [];
 
-  for (const job of store.jobs) {
-    if (job.payload.kind !== 'agentTurn') {
+  for (const job of await listCronJobs(request)) {
+    if (
+      job.payload.kind !== 'agentTurn' ||
+      (job.payload.model === undefined && job.payload.fallbacks === undefined) ||
+      isBudgetHeld(job)
+    ) {
       continue;
     }
-    let changed = false;
-    if (job.payload.model !== undefined) {
-      delete job.payload.model;
-      changed = true;
-    }
-    if (job.payload.fallbacks !== undefined) {
-      delete job.payload.fallbacks;
-      changed = true;
-    }
-    if (changed) {
-      changedJobs.push(job.id);
-    }
+    // cron.update requires operator.admin; plugin requests default to operator.write.
+    await request(
+      'cron.update',
+      {
+        id: job.id,
+        patch: {
+          payload: {
+            kind: 'agentTurn',
+            model: null,
+            fallbacks: null,
+          },
+        },
+      },
+      { scopes: ['operator.admin'] }
+    );
+    changedJobs.push(job.id);
   }
 
   if (changedJobs.length > 0) {
-    await cronStore.saveCronStore(storePath, store);
     logger.info(
       `[tlon-hosting] Migrated ${changedJobs.length} current cron model selection${
         changedJobs.length === 1 ? '' : 's'
@@ -66,8 +105,9 @@ export function registerCronModelMigration(api: OpenClawPluginApi): void {
     start: async (context: OpenClawPluginServiceContext) => {
       try {
         await migrateCurrentCronModels({
-          config: context.config,
           logger: context.logger,
+          request: (method, params, options) =>
+            api.runtime.gateway.request(method, params, options),
         });
       } catch (error) {
         context.logger.warn(

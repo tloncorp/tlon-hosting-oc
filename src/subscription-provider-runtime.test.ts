@@ -96,7 +96,7 @@ describe('registerSubscriptionProviderRuntimes', () => {
     );
   });
 
-  it('loads the bundled OpenClaw 7.1 runtime hooks', () => {
+  it('loads the OpenClaw 9.4 provider runtime hooks', () => {
     const api = makeApi({
       plugins: { allow: ['tlon'] },
     });
@@ -114,6 +114,11 @@ describe('registerSubscriptionProviderRuntimes', () => {
     expect(providerById.get('openai')?.resolveDynamicModel).toBeTypeOf(
       'function'
     );
+    // This direct call carries no providerConfig, so it shows the planner-less
+    // default (openai-responses on the platform URL). At runtime 9.33's auth
+    // planner picks the ChatGPT route for an OAuth-only profile and projects it
+    // into provider config before materialization; this test does not exercise
+    // that routing.
     expect(
       providerById.get('openai')?.resolveDynamicModel?.({
         provider: 'openai',
@@ -125,8 +130,8 @@ describe('registerSubscriptionProviderRuntimes', () => {
     ).toMatchObject({
       id: 'gpt-5.6-luna',
       provider: 'openai',
-      api: 'openai-chatgpt-responses',
-      baseUrl: 'https://chatgpt.com/backend-api/codex',
+      api: 'openai-responses',
+      baseUrl: 'https://api.openai.com/v1',
     });
     expect(providerById.get('openai')?.refreshOAuth).toBeTypeOf('function');
     expect(providerById.get('anthropic')?.resolveDynamicModel).toBeTypeOf(
