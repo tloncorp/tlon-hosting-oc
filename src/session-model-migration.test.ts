@@ -49,7 +49,6 @@ describe('session model migration', () => {
     const store = createSessionStore({
       openrouter: {
         sessionId: 'one',
-        sessionFile: 'one.jsonl',
         updatedAt: 1,
         providerOverride: 'openrouter',
         modelOverride: 'minimax/minimax-m3',
@@ -59,6 +58,7 @@ describe('session model migration', () => {
         modelProvider: 'openrouter',
         model: 'minimax/minimax-m3',
         contextTokens: 200000,
+        contextTokensSource: 'runtime',
         contextBudgetStatus: {
           schemaVersion: 1,
           source: 'pre-prompt-estimate',
@@ -78,7 +78,11 @@ describe('session model migration', () => {
           messageCount: 2,
           unwindowedMessageCount: 2,
         },
-        fallbackNoticeSelectedModel: 'minimax/minimax-m3',
+        fallbackNotice: {
+          kind: 'active',
+          selectedModel: 'minimax/minimax-m3',
+          activeModel: 'anthropic/claude-opus-4-6',
+        },
       },
       direct: {
         sessionId: 'two',
@@ -128,6 +132,19 @@ describe('session model migration', () => {
         modelProvider: 'xai',
         model: 'grok-4.6',
       },
+      'agent-patch': {
+        sessionId: 'six',
+        updatedAt: 9,
+        modelFallback: {
+          prevModel: 'minimax/minimax-m3',
+          prevProvider: 'openrouter',
+          prevModelOverride: 'minimax/minimax-m3',
+          prevProviderOverride: 'openrouter',
+          prevModelOverrideSource: 'user',
+          ts: 9,
+          source: 'agent-patch',
+        },
+      },
       inherited: {
         sessionId: 'five',
         updatedAt: 8,
@@ -148,10 +165,9 @@ describe('session model migration', () => {
       sessionStore: store.runtime,
     });
 
-    expect(result.changedSessions).toBe(7);
+    expect(result.changedSessions).toBe(8);
     expect(store.entries.openrouter).toMatchObject({
       sessionId: 'one',
-      sessionFile: 'one.jsonl',
       updatedAt: 1,
     });
     expect(store.entries.openrouter).not.toHaveProperty('providerOverride');
@@ -160,9 +176,10 @@ describe('session model migration', () => {
     expect(store.entries.openrouter).not.toHaveProperty('modelProvider');
     expect(store.entries.openrouter).not.toHaveProperty('model');
     expect(store.entries.openrouter).not.toHaveProperty('contextTokens');
+    expect(store.entries.openrouter).not.toHaveProperty('contextTokensSource');
     expect(store.entries.openrouter).not.toHaveProperty('contextBudgetStatus');
     expect(store.entries.openrouter).not.toHaveProperty(
-      'fallbackNoticeSelectedModel'
+      'fallbackNotice'
     );
     for (const key of [
       'openrouter',
@@ -172,6 +189,7 @@ describe('session model migration', () => {
       'm2.7',
       'premium',
       'xai',
+      'agent-patch',
     ]) {
       expect(store.entries[key]).not.toHaveProperty('providerOverride');
       expect(store.entries[key]).not.toHaveProperty('modelOverride');
@@ -180,7 +198,12 @@ describe('session model migration', () => {
       expect(store.entries[key]).not.toHaveProperty(
         'authProfileOverrideSource'
       );
+      expect(store.entries[key]).not.toHaveProperty('modelFallback');
     }
+    expect(store.entries['agent-patch']).toMatchObject({
+      sessionId: 'six',
+      updatedAt: 9,
+    });
     expect(store.entries.inherited).toMatchObject({
       sessionId: 'five',
       updatedAt: 8,
