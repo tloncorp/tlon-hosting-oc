@@ -497,7 +497,8 @@ export function parseDeviceCodeVerificationMessage(
 
   let url: URL;
   try {
-    url = new URL(urlMatch[1]);
+    // OpenClaw's device-code prompt renders the URL as a Markdown autolink.
+    url = new URL(urlMatch[1].replace(/^<(.+)>$/, '$1'));
   } catch {
     return null;
   }

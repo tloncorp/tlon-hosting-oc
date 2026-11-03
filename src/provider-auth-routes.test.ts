@@ -282,12 +282,15 @@ describe('isManagedConfigLockPermissionError', () => {
 });
 
 describe('parseOpenAIVerificationMessage', () => {
-  it('extracts the OpenAI device URL and one-time code', () => {
+  it.each([
+    'https://auth.openai.com/codex/device',
+    '<https://auth.openai.com/codex/device>',
+  ])('extracts the OpenAI device URL and one-time code from %s', (url) => {
     expect(
       parseOpenAIVerificationMessage(
         [
           'Open this URL in your browser.',
-          'URL: https://auth.openai.com/codex/device',
+          `URL: ${url}`,
           'Code: ABCD-EFGH',
         ].join('\n')
       )
@@ -303,6 +306,10 @@ describe('parseOpenAIVerificationMessage', () => {
     'URL: https://auth.openai.com.evil.example/codex/device\nCode: ABCD-EFGH',
     'URL: https://auth.openai.com/codex/other\nCode: ABCD-EFGH',
     'URL: https://auth.openai.com/codex/device',
+    'URL: <https://evil.example/codex/device>\nCode: ABCD-EFGH',
+    'URL: <http://auth.openai.com/codex/device>\nCode: ABCD-EFGH',
+    'URL: <https://auth.openai.com/codex/device\nCode: ABCD-EFGH',
+    'URL: https://auth.openai.com/codex/device>\nCode: ABCD-EFGH',
   ])('rejects an invalid or incomplete handoff: %s', (message) => {
     expect(parseOpenAIVerificationMessage(message)).toBeNull();
   });
