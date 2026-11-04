@@ -880,29 +880,57 @@ const xaiOAuthModelAdapter: OAuthSubscriptionModelAdapter = {
   discoverModels: fetchXaiOAuthSubscriptionModels,
 };
 
+export async function loadAnthropicSubscriptionModels(
+  api: OpenClawPluginApi,
+  authState: unknown
+): Promise<SubscriptionModel[]> {
+  try {
+    const cached = await api.runtime.gateway.request('models.list', {
+      view: 'all',
+    });
+    const models = extractSubscriptionModels(cached).anthropic ?? [];
+    const providers = asRecord(authState).providers;
+    const hasSubscription =
+      Array.isArray(providers) &&
+      providers.some((value) => {
+        const provider = asRecord(value);
+        return (
+          provider.provider === 'anthropic' &&
+          Array.isArray(provider.profiles) &&
+          provider.profiles.some((value) => {
+            const profile = asRecord(value);
+            return profile.type === 'token' || profile.type === 'oauth';
+          })
+        );
+      });
+    if (models.length > 0 || !hasSubscription) {
+      return models;
+    }
+    // Auth refresh does not populate the full model catalog. A connected
+    // subscription needs discovery when the gateway's published catalog is empty.
+    const refreshed = await api.runtime.gateway.request('models.list', {
+      view: 'all',
+      refresh: true,
+    });
+    return extractSubscriptionModels(refreshed).anthropic ?? [];
+  } catch (error) {
+    api.logger.warn(
+      `[tlon-hosting] Anthropic subscription model catalog load failed: ${errorMessage(error)}`
+    );
+    return [];
+  }
+}
+
 async function loadSubscriptionModelCatalog(
-  api: OpenClawPluginApi
+  api: OpenClawPluginApi,
+  authState: unknown
 ): Promise<SubscriptionModelCatalog> {
-  const [openai, xai, gatewayResult] = await Promise.all([
+  const [openai, xai, anthropic] = await Promise.all([
     loadOpenAISubscriptionModels(api),
     loadOAuthSubscriptionModels(api, xaiOAuthModelAdapter),
-    api.runtime.gateway
-      .request('models.list', { view: 'all' })
-      .catch((error: unknown) => {
-        api.logger.warn(
-          `[tlon-hosting] Anthropic subscription model catalog load failed: ${errorMessage(
-            error
-          )}`
-        );
-        return {};
-      }),
+    loadAnthropicSubscriptionModels(api, authState),
   ]);
-  const gatewayCatalog = extractSubscriptionModels(gatewayResult);
-  return {
-    openai,
-    anthropic: gatewayCatalog.anthropic ?? [],
-    xai,
-  };
+  return { openai, anthropic, xai };
 }
 
 function includeDetectedAuthFailures(
@@ -1010,7 +1038,7 @@ export function registerProviderAuthRoutes(api: OpenClawPluginApi): boolean {
           // Refresh auth first so auth-dependent provider catalogs (notably
           // xAI OAuth) cannot race model discovery with stale credentials.
           const result = await requestFreshGatewayAuthState(api);
-          const subscriptionModels = await loadSubscriptionModelCatalog(api);
+          const subscriptionModels = await loadSubscriptionModelCatalog(api, result);
           const status = includeDetectedAuthFailures(api, result);
           writeJson(res, 200, {
             ...(status && typeof status === 'object' ? status : {}),
