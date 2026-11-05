@@ -103,9 +103,10 @@ type ModelsAuthLoginFlowOptions = {
   prompter: ProviderLoginPrompter;
   isRemote: boolean;
   openUrl: (url: string) => Promise<void>;
+  onModelAccessRequested?: () => void;
 };
 
-async function runModelsAuthLoginFlow(
+export async function runModelsAuthLoginFlow(
   options: ModelsAuthLoginFlowOptions
 ): Promise<unknown> {
   // OpenClaw does not yet expose its programmatic provider login coordinator
@@ -117,7 +118,14 @@ async function runModelsAuthLoginFlow(
       params: ModelsAuthLoginFlowOptions
     ) => Promise<unknown>;
   };
-  return await runtime.runModelsAuthLoginFlow(options);
+  return await runtime.runModelsAuthLoginFlow({
+    ...options,
+    // Tlon owns model selection and managed config. Defer OpenClaw's
+    // post-login model-access prompt without broadening the model allowlist.
+    onModelAccessRequested: () => {
+      options.runtime.log('Model access selection deferred to Tlon settings.');
+    },
+  });
 }
 
 async function fetchLiveProviderModelRows(
