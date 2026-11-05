@@ -8,6 +8,7 @@ const {
   registerRuntimes,
   registerSessionMigration,
   registerTurnOutcomes,
+  registerTokenUsage,
 } = vi.hoisted(() => ({
     registerCronGuard: vi.fn(),
     registerCronMigration: vi.fn(),
@@ -16,6 +17,7 @@ const {
     registerRuntimes: vi.fn(),
     registerSessionMigration: vi.fn(),
     registerTurnOutcomes: vi.fn(),
+    registerTokenUsage: vi.fn(),
   }));
 
 vi.mock('./src/cron-model-migration.js', () => ({
@@ -23,6 +25,9 @@ vi.mock('./src/cron-model-migration.js', () => ({
 }));
 vi.mock('./src/turn-outcomes.js', () => ({
   registerHostedTurnOutcomes: registerTurnOutcomes,
+}));
+vi.mock('./src/token-usage.js', () => ({
+  registerTokenUsageRoute: registerTokenUsage,
 }));
 vi.mock('./src/cron-trigger-guard.js', () => ({
   registerHostedCronTriggerGuard: registerCronGuard,
@@ -56,6 +61,7 @@ describe('tlon-hosting-oc plugin', () => {
     expect(registerCronMigration).toHaveBeenCalledWith(api);
     expect(registerSessionMigration).toHaveBeenCalledWith(api);
     expect(registerRoutes).toHaveBeenCalledWith(api);
+    expect(registerTokenUsage).toHaveBeenCalledWith(api);
     expect(registerPromptSync).toHaveBeenCalledWith(api);
     expect(registerRuntimes.mock.invocationCallOrder[0]).toBeLessThan(
       registerRoutes.mock.invocationCallOrder[0]

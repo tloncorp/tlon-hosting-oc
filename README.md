@@ -22,6 +22,26 @@ previously owned by `tlawn.py`.
 
 This package does not contain the Tlon Messenger channel plugin.
 
+## Token usage
+
+`GET /tlon/token-usage` is gateway-authenticated and returns OpenClaw's
+recorded token totals and `byProvider` totals. Solaris exposes it to the ship's
+owner or an administrator at
+`GET /v1/tlawn/ships/<ship>/token-usage`, through Pioneer's authenticated
+`GET /v1/token-usage` proxy.
+
+Optional `startDate` and `endDate` parameters are inclusive UTC dates in
+`YYYY-MM-DD` form. They default to the first day of the current UTC month and
+today. The report includes all agents and retained session instances; the
+gateway's row limit does not cap the aggregate totals. Each total includes
+`input`, `output`, `cacheRead`, `cacheWrite`, and `totalTokens`. Partial and
+cache-status markers from OpenClaw are preserved.
+
+`keyAttribution: "unavailable"` means usage is not split by credential.
+Provider totals include both default and user-provided credentials and must
+not be presented as Tlon-funded usage or a remaining allowance. The response
+excludes session identities, conversation content, credentials, and cost data.
+
 ## User-turn outcomes
 
 The gateway service observes the channel plugin's `tlon.agent_turn.terminal`

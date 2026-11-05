@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   disconnectProviderAuth,
+  loadAnthropicSubscriptionModels,
   extractOpenAICodexModels,
   extractSubscriptionModels,
   extractXaiOAuthModels,
@@ -282,12 +283,15 @@ describe('isManagedConfigLockPermissionError', () => {
 });
 
 describe('parseOpenAIVerificationMessage', () => {
-  it('extracts the OpenAI device URL and one-time code', () => {
+  it.each([
+    'https://auth.openai.com/codex/device',
+    '<https://auth.openai.com/codex/device>',
+  ])('extracts the OpenAI device URL and one-time code from %s', (url) => {
     expect(
       parseOpenAIVerificationMessage(
         [
           'Open this URL in your browser.',
-          'URL: https://auth.openai.com/codex/device',
+          `URL: ${url}`,
           'Code: ABCD-EFGH',
         ].join('\n')
       )
@@ -303,6 +307,10 @@ describe('parseOpenAIVerificationMessage', () => {
     'URL: https://auth.openai.com.evil.example/codex/device\nCode: ABCD-EFGH',
     'URL: https://auth.openai.com/codex/other\nCode: ABCD-EFGH',
     'URL: https://auth.openai.com/codex/device',
+    'URL: <https://evil.example/codex/device>\nCode: ABCD-EFGH',
+    'URL: <http://auth.openai.com/codex/device>\nCode: ABCD-EFGH',
+    'URL: <https://auth.openai.com/codex/device\nCode: ABCD-EFGH',
+    'URL: https://auth.openai.com/codex/device>\nCode: ABCD-EFGH',
   ])('rejects an invalid or incomplete handoff: %s', (message) => {
     expect(parseOpenAIVerificationMessage(message)).toBeNull();
   });
@@ -335,5 +343,86 @@ describe('parseDeviceCodeVerificationMessage', () => {
     'URL: https://accounts.x.ai/oauth2/device',
   ])('rejects an invalid or incomplete xAI handoff: %s', (message) => {
     expect(parseDeviceCodeVerificationMessage('xai', message)).toBeNull();
+  });
+});
+
+describe('loadAnthropicSubscriptionModels', () => {
+  const catalog = {
+    models: [
+      {
+        provider: 'anthropic',
+        id: 'claude-sonnet-5',
+        name: 'Claude Sonnet 5',
+        api: 'anthropic-messages',
+        available: true,
+      },
+    ],
+  };
+  const authState = (type: string) => ({
+    providers: [{ provider: 'anthropic', profiles: [{ type }] }],
+  });
+  const setup = () => {
+    const request = vi.fn();
+    const warn = vi.fn();
+    const api = {
+      runtime: { gateway: { request } },
+      logger: { warn },
+    } as never;
+    return { request, warn, api };
+  };
+
+  it.each(['token', 'oauth'])(
+    'discovers models for a connected %s profile after a cold catalog read',
+    async (type) => {
+      const { api, request } = setup();
+      request.mockResolvedValueOnce({ models: [] }).mockResolvedValue(catalog);
+      const models = await loadAnthropicSubscriptionModels(
+        api,
+        authState(type)
+      );
+      expect(models.map((model) => model.id)).toEqual(['claude-sonnet-5']);
+      expect(request.mock.calls).toEqual([
+        ['models.list', { view: 'all' }],
+        ['models.list', { view: 'all', refresh: true }],
+      ]);
+      expect(
+        await loadAnthropicSubscriptionModels(api, authState(type))
+      ).toEqual(models);
+      expect(request).toHaveBeenCalledTimes(3);
+      expect(request).toHaveBeenLastCalledWith('models.list', { view: 'all' });
+    }
+  );
+
+  it.each([
+    undefined,
+    authState('api_key'),
+    { providers: [{ provider: 'openai', profiles: [{ type: 'oauth' }] }] },
+  ])(
+    'does not discover an unconnected Anthropic subscription',
+    async (auth) => {
+      const { api, request } = setup();
+      request.mockResolvedValue({ models: [] });
+      expect(await loadAnthropicSubscriptionModels(api, auth)).toEqual([]);
+      expect(request).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('logs a failed discovery and leaves the next request able to retry', async () => {
+    const { api, request, warn } = setup();
+    request
+      .mockResolvedValueOnce({ models: [] })
+      .mockRejectedValueOnce(new Error('discovery failed'));
+    expect(
+      await loadAnthropicSubscriptionModels(api, authState('token'))
+    ).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('discovery failed')
+    );
+    request
+      .mockResolvedValueOnce({ models: [] })
+      .mockResolvedValueOnce(catalog);
+    expect(
+      await loadAnthropicSubscriptionModels(api, authState('token'))
+    ).toHaveLength(1);
   });
 });

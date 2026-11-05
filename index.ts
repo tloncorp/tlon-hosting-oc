@@ -8,6 +8,7 @@ import { registerSessionModelMigration } from './src/session-model-migration.js'
 import { registerSubscriptionProviderRuntimes } from './src/subscription-provider-runtime.js';
 import { registerWorkspacePromptSync } from './src/workspace-prompts.js';
 import { registerHostedTurnOutcomes } from './src/turn-outcomes.js';
+import { registerTokenUsageRoute } from './src/token-usage.js';
 
 export function registerTlonHostingOpenClaw(api: OpenClawPluginApi): void {
   registerHostedTurnOutcomes(api);
@@ -16,6 +17,7 @@ export function registerTlonHostingOpenClaw(api: OpenClawPluginApi): void {
   registerCronModelMigration(api);
   registerSessionModelMigration(api);
   registerProviderAuthRoutes(api);
+  registerTokenUsageRoute(api);
   registerWorkspacePromptSync(api);
 }
 
