@@ -372,26 +372,48 @@ describe('loadAnthropicSubscriptionModels', () => {
   };
 
   it.each(['token', 'oauth'])(
-    'discovers models for a connected %s profile after a cold catalog read',
+    'loads the full catalog for a connected %s profile after applying a model',
     async (type) => {
       const { api, request } = setup();
-      request.mockResolvedValueOnce({ models: [] }).mockResolvedValue(catalog);
+      const otherModel = {
+        provider: 'anthropic',
+        id: 'claude-opus-4-8',
+        name: 'Claude Opus 4.8',
+        api: 'anthropic-messages',
+        available: true,
+      };
+      // The ordinary published snapshot contains only the applied model.
+      // Full discovery also exposes the other selectable models.
+      request.mockImplementation(async (_method, params) =>
+        params.refresh ? { models: [...catalog.models, otherModel] } : catalog
+      );
       const models = await loadAnthropicSubscriptionModels(
         api,
         authState(type)
       );
-      expect(models.map((model) => model.id)).toEqual(['claude-sonnet-5']);
-      expect(request.mock.calls).toEqual([
-        ['models.list', { view: 'all' }],
-        ['models.list', { view: 'all', refresh: true }],
+      expect(models.map((model) => model.id)).toEqual([
+        'claude-sonnet-5',
+        'claude-opus-4-8',
       ]);
       expect(
         await loadAnthropicSubscriptionModels(api, authState(type))
       ).toEqual(models);
-      expect(request).toHaveBeenCalledTimes(3);
-      expect(request).toHaveBeenLastCalledWith('models.list', { view: 'all' });
+      expect(request.mock.calls).toEqual([
+        ['models.list', { view: 'all', refresh: true }],
+        ['models.list', { view: 'all', refresh: true }],
+      ]);
     }
   );
+
+  it('discovers models from an empty published catalog', async () => {
+    const { api, request } = setup();
+    request.mockImplementation(async (_method, params) =>
+      params.refresh ? catalog : { models: [] }
+    );
+    expect(
+      await loadAnthropicSubscriptionModels(api, authState('token'))
+    ).toHaveLength(1);
+  });
 
   it.each([
     undefined,
@@ -403,24 +425,20 @@ describe('loadAnthropicSubscriptionModels', () => {
       const { api, request } = setup();
       request.mockResolvedValue({ models: [] });
       expect(await loadAnthropicSubscriptionModels(api, auth)).toEqual([]);
-      expect(request).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledExactlyOnceWith('models.list', { view: 'all' });
     }
   );
 
   it('logs a failed discovery and leaves the next request able to retry', async () => {
     const { api, request, warn } = setup();
-    request
-      .mockResolvedValueOnce({ models: [] })
-      .mockRejectedValueOnce(new Error('discovery failed'));
+    request.mockRejectedValueOnce(new Error('discovery failed'));
     expect(
       await loadAnthropicSubscriptionModels(api, authState('token'))
     ).toEqual([]);
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('discovery failed')
     );
-    request
-      .mockResolvedValueOnce({ models: [] })
-      .mockResolvedValueOnce(catalog);
+    request.mockResolvedValueOnce(catalog);
     expect(
       await loadAnthropicSubscriptionModels(api, authState('token'))
     ).toHaveLength(1);
