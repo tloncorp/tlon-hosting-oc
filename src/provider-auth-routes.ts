@@ -893,11 +893,7 @@ export async function loadAnthropicSubscriptionModels(
   authState: unknown
 ): Promise<SubscriptionModel[]> {
   try {
-    const cached = await api.runtime.gateway.request('models.list', {
-      view: 'all',
-    });
-    const models = extractSubscriptionModels(cached).anthropic ?? [];
-    const providers = asRecord(authState).providers;
+    const providers = asRecord(authState ?? {}).providers;
     const hasSubscription =
       Array.isArray(providers) &&
       providers.some((value) => {
@@ -911,14 +907,11 @@ export async function loadAnthropicSubscriptionModels(
           })
         );
       });
-    if (models.length > 0 || !hasSubscription) {
-      return models;
-    }
-    // Auth refresh does not populate the full model catalog. A connected
-    // subscription needs discovery when the gateway's published catalog is empty.
+    // Applying a model can publish a configured-only catalog. Even a nonempty
+    // list needs full discovery before it can serve the subscription picker.
     const refreshed = await api.runtime.gateway.request('models.list', {
       view: 'all',
-      refresh: true,
+      ...(hasSubscription ? { refresh: true } : {}),
     });
     return extractSubscriptionModels(refreshed).anthropic ?? [];
   } catch (error) {
